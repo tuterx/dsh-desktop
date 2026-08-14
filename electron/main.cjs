@@ -428,6 +428,7 @@ function buildMenu() {
           label: 'DeepSeek Harness',
           submenu: [
             { role: 'about', label: '关于 DeepSeek Harness' },
+            { label: '检查更新…', click: () => { checkForUpdate(false) } },
             { type: 'separator' },
             { role: 'hide', label: '隐藏' },
             { role: 'hideOthers' },
@@ -442,7 +443,7 @@ function buildMenu() {
         { role: 'windowMenu', label: '窗口' },
       ]
     : [
-        { label: '文件', submenu: [{ role: 'quit', label: '退出' }] },
+        { label: '文件', submenu: [{ role: 'quit', label: '退出' }, { label: '检查更新…', click: () => { checkForUpdate(false) } }] },
         edit,
         appearanceMenu,
         view,
@@ -463,20 +464,30 @@ function sendUpdate(channel, payload) {
   }
 }
 
-/** Check GitHub for a newer build; show the badge when one exists. */
+/**
+ * Check GitHub for a newer build. When silent, only the log records the
+ * outcome; otherwise the page badge shows the result (blue = update ready,
+ * green = already latest, tooltip = error).
+ */
 async function checkForUpdate(silent = false) {
   try {
     const latest = await updater.fetchLatestRelease()
-    if (!latest) return
+    if (!latest) {
+      writeLog('更新检查失败: 无法获取最新 release')
+      if (!silent) sendUpdate('update:error', '无法连接 GitHub，请检查网络')
+      return
+    }
     latestRelease = latest
     if (updater.hasUpdate(latest)) {
-      writeLog(`发现新版本: ${latest.tag} (当前 ${updater.bundledCommit().slice(0, 12)})`)
-      sendUpdate('update:available', { ...latest, shortCommit: latest.commit.slice(0, 12) })
-    } else if (!silent) {
+      writeLog(`发现新版本: ${latest.tag} (当前 ${updater.bundledCommit().slice(0, 12)}/${updater.bundledAppBuild()})`)
+      sendUpdate('update:available', { ...latest, shortCommit: latest.upstream })
+    } else {
       writeLog('已是最新版本')
+      if (!silent) sendUpdate('update:uptodate', { shortCommit: latest.upstream })
     }
   } catch (err) {
     writeLog(`更新检查失败: ${err.message}`)
+    if (!silent) sendUpdate('update:error', err.message)
   }
 }
 
@@ -515,12 +526,13 @@ async function bootstrap() {
   const bootTheme = appearance.load().theme === 'system' ? 'system' : appearance.load().theme
   if (nativeTheme.themeSource !== bootTheme) nativeTheme.themeSource = bootTheme
 
-  // Auto-update: check shortly after launch, then periodically.
+  // Auto-update: check shortly after launch (silent - no badge when already
+  // latest), then periodically; the 检查更新… menu item checks on demand.
   ipcMain.on('update:download', () => { performUpdate() })
   ipcMain.on('update:open-installer', () => {
     if (downloadedDmg) updater.openInstaller(downloadedDmg)
   })
-  setTimeout(() => { checkForUpdate() }, updater.CHECK_DELAY_MS)
+  setTimeout(() => { checkForUpdate(true) }, updater.CHECK_DELAY_MS)
   updateTimer = setInterval(() => { checkForUpdate(true) }, updater.CHECK_INTERVAL_MS)
 
   // Allow clipboard access: modern Electron denies unhandled permission

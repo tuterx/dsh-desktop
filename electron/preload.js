@@ -115,6 +115,7 @@ function ensureBadge() {
 }
 
 function showBadge(state, text, percent) {
+  clearTimeout(uptodateTimer)
   const el = ensureBadge()
   badgeState = state
   el.classList.toggle('visible', state !== 'hidden')
@@ -135,6 +136,8 @@ function showBadge(state, text, percent) {
   }
 }
 
+let uptodateTimer = null
+
 // ── IPC wiring ────────────────────────────────────────────────────────────
 ipcRenderer.on('update:available', (_e, info) => {
   showBadge('ready', `发现新版本 (${info.shortCommit})\n点击下载更新`, 0)
@@ -147,6 +150,11 @@ ipcRenderer.on('update:done', (_e, info) => {
 })
 ipcRenderer.on('update:error', (_e, message) => {
   showBadge('ready', `更新失败: ${message}`, 0)
+})
+// Manual check result: already latest - green badge, auto-hides after 3 s.
+ipcRenderer.on('update:uptodate', (_e, info) => {
+  showBadge('done', `已是最新版本 (${info.shortCommit})`, 100)
+  uptodateTimer = setTimeout(() => showBadge('hidden', '', 0), 3000)
 })
 
 // ── bridge ───────────────────────────────────────────────────────────────

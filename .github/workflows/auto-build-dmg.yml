@@ -47,20 +47,29 @@ jobs:
         env:
           NODE_MIRROR: https://npmmirror.com/mirrors/node
           ELECTRON_MIRROR: https://cdn.npmmirror.com/binaries/electron/
+          APP_SHA: ${{ github.sha }}
 
-      - name: Read upstream commit
+      - name: Read build metadata
         id: upstream
-        run: echo "commit=$(cat resources/UPSTREAM_COMMIT)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "commit=$(cat resources/UPSTREAM_COMMIT)" >> "$GITHUB_OUTPUT"
+          echo "app=$(cat resources/APP_BUILD)" >> "$GITHUB_OUTPUT"
 
-      - name: Check existing release for this upstream commit
+      # Release identity = "dsh-<upstream12><app7>": the in-app updater treats
+      # a change in EITHER part as a new build, so shell-code fixes ship too.
+      - name: Check existing release for this build
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "dsh-${{ steps.upstream.outputs.commit }}" >/dev/null 2>&1; then
+          COMMIT="${{ steps.upstream.outputs.commit }}"
+          APP="${{ steps.upstream.outputs.app }}"
+          TAG="dsh-${COMMIT:0:12}${APP}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build DMG
@@ -77,9 +86,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           COMMIT="${{ steps.upstream.outputs.commit }}"
+          TAG="${{ steps.check.outputs.tag }}"
           SHORT="${COMMIT:0:12}"
           DMG=$(ls -t release/*.dmg | head -1)
-          gh release create "dsh-${COMMIT}" "$DMG" \
+          gh release create "$TAG" "$DMG" \
             --title "DeepSeek Harness desktop @ upstream ${SHORT}" \
             --notes "Auto-built from deepseek-harness @ ${COMMIT}" \
             --latest

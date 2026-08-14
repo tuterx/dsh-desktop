@@ -3,15 +3,25 @@
 /**
  * Auto-update checks for the dsh desktop app.
  *
- * The CI workflow publishes one GitHub Release per upstream commit
- * (tag "dsh-<commit>", asset DeepSeek-Harness-*.dmg). This module:
- *   1. compares the CURRENT bundled upstream commit (resources/UPSTREAM_COMMIT)
- *      with the LATEST release tag on github.com/tuterx/dsh-desktop
+ * The CI workflow publishes one GitHub Release per build
+ * (tag "dsh-<upstream12><app7>", asset DeepSeek-Harness-*.dmg), where:
+ *   - upstream12 = first 12 hex of the bundled upstream deepseek-harness commit
+ *   - app7       = first 7 hex of the dsh-desktop repo commit that built the shell
+ *
+ * This module:
+ *   1. compares the CURRENT bundled identity (resources/UPSTREAM_COMMIT +
+ *      resources/APP_BUILD) with the LATEST release tag on
+ *      github.com/tuterx/dsh-desktop
  *   2. downloads the new DMG to ~/Downloads with progress events
  *
  * Updating is download-and-open (not silent): the DMG is unsigned, so
  * Squirrel-style auto-install is not possible. The user installs the new
  * build from the downloaded DMG.
+ *
+ * Backward compatibility: the first release used the full 40-hex upstream
+ * commit as the tag (no app part). parseTag tolerates it (app === null) and
+ * hasUpdate falls back to comparing the upstream half only, so an app that
+ * predates the app7 format still treats any new-format tag as an update.
  */
 
 const { app, shell } = require('electron')
@@ -36,6 +46,30 @@ function bundledCommit() {
   }
 }
 
+/** The dsh-desktop shell commit this build was made from. */
+function bundledAppBuild() {
+  try {
+    const path = process.resourcesPath
+      ? join(process.resourcesPath, 'APP_BUILD')
+      : join(__dirname, '..', 'resources', 'APP_BUILD')
+    return require('node:fs').readFileSync(path, 'utf8').trim()
+  } catch {
+    return '0000000'
+  }
+}
+
+/**
+ * Split a release tag into its (upstream, app) identity.
+ * "dsh-<upstream12><app7>" → { upstream, app }; a legacy 40-hex commit tag
+ * (first release, no app part) still parses with app === null.
+ */
+function parseTag(tag) {
+  const m = /^dsh-([0-9a-f]{12})([0-9a-f]{7})$/.exec(tag)
+  if (m) return { upstream: m[1], app: m[2] }
+  const legacy = /^dsh-([0-9a-f]{40})$/.exec(tag)
+  return legacy ? { upstream: legacy[1].slice(0, 12), app: null } : null
+}
+
 /** Fetch the latest release info from GitHub. Returns null on failure. */
 function fetchLatestRelease() {
   return new Promise((resolve) => {
@@ -54,10 +88,11 @@ function fetchLatestRelease() {
         try {
           const data = JSON.parse(body)
           const tag = String(data.tag_name || '')
-          const commit = tag.startsWith('dsh-') ? tag.slice(4) : ''
+          const id = parseTag(tag)
           const asset = (data.assets || []).find((a) => a.name.endsWith('.dmg'))
-          resolve(commit && asset ? {
-            commit,
+          resolve(id && asset ? {
+            upstream: id.upstream,
+            app: id.app,
             tag,
             name: data.name || tag,
             assetUrl: asset.browser_download_url,
@@ -75,9 +110,15 @@ function fetchLatestRelease() {
   })
 }
 
-/** Is there a newer build than the one bundled? */
-function hasUpdate(latest, current = bundledCommit()) {
-  return Boolean(latest && latest.commit && latest.commit !== current)
+/**
+ * Is there a newer build than the one bundled? An update exists when either
+ * the upstream commit or the app-shell build differs from what we have.
+ */
+function hasUpdate(latest, current = bundledCommit(), currentApp = bundledAppBuild()) {
+  if (!latest || !latest.upstream) return false
+  if (latest.upstream !== current.slice(0, 12)) return true
+  // Old-format tags carry no app identity; skip that comparison for them.
+  return Boolean(latest.app && latest.app !== currentApp)
 }
 
 /**
@@ -118,6 +159,8 @@ module.exports = {
   CHECK_INTERVAL_MS,
   CHECK_DELAY_MS,
   bundledCommit,
+  bundledAppBuild,
+  parseTag,
   fetchLatestRelease,
   hasUpdate,
   downloadDmg,

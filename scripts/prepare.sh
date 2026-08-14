@@ -6,9 +6,11 @@
 #   resources/dsh/   full upstream workspace, built (apps/cli/lib, apps/web/dist)
 #   resources/node/  standalone Node runtime matching dsh's engines
 #   resources/dsh/UPSTREAM_COMMIT  pinned upstream commit for version display
+#   resources/APP_BUILD            dsh-desktop shell commit (release identity)
 #
 # Usage: bash scripts/prepare.sh [--force]
 #   --force  rebuild even when upstream is unchanged
+#   env APP_SHA  shell commit to record (CI sets ${{ github.sha }})
 # =============================================================================
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -42,6 +44,14 @@ fi
 
 UPSTREAM_COMMIT="$(git -C "$RES/dsh" rev-parse HEAD)"
 echo "[upstream] pinned commit: ${UPSTREAM_COMMIT:0:12}"
+
+# Shell identity: which dsh-desktop commit built this DMG. Always written
+# (not a build gate) so the in-app updater can detect shell-code updates.
+APP_SHA="${APP_SHA:-$(git rev-parse --short HEAD 2>/dev/null || true)}"
+APP_SHA="${APP_SHA:0:7}"
+[ -n "$APP_SHA" ] || APP_SHA="0000000"
+echo "$APP_SHA" > "$RES/APP_BUILD"
+echo "[shell]   app build: $APP_SHA"
 
 # Skip rebuild when unchanged (unless forced). The marker lives OUTSIDE the
 # upstream checkout (resources/UPSTREAM_COMMIT) because `git clean` inside the
