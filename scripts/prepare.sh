@@ -78,17 +78,18 @@ fi
 # of shipping a broken app. Idempotent - safe on every prepare run.
 if [ -d "$RES/dsh/node_modules/.pnpm" ]; then
   echo "[prune] removing dev-only tooling from node_modules..."
+  # set -e-safe: find/rm failures are tolerable (idempotent prune)
   (cd "$RES/dsh/node_modules" && find .pnpm -maxdepth 1 -type d \( \
       -name "typescript@*" -o -name "vite@*" -o -name "vitest@*" -o -name "tsdown@*" \
       -o -name "eslint@*" -o -name "lefthook@*" -o -name "tsx@*" -o -name "rolldown*" \
       -o -name "jiti@*" -o -name "lightningcss@*" -o -name "esbuild@*" -o -name "@esbuild*" \
       -o -name "publint@*" -o -name "knip@*" -o -name "jscpd@*" -o -name "vitepress@*" \
       -o -name "oxlint*" -o -name "@oxlint*" -o -name "@rolldown*" -o -name "@types+*" \
-      -o -name "playwright*" -o -name "@eslint+*" -o -name "prettier*" \) -exec rm -rf {} + 2>/dev/null; \
-    for t in typescript vite vitest tsdown eslint lefthook tsx rolldown jiti lightningcss \
-             esbuild publint knip jscpd vitepress oxlint prettier playwright-core; do \
-      [ -L "$t" ] && rm -f "$t"; \
-    done)
+      -o -name "playwright*" -o -name "@eslint+*" -o -name "prettier*" \) -exec rm -rf {} + 2>/dev/null || true)
+  for t in typescript vite vitest tsdown eslint lefthook tsx rolldown jiti lightningcss \
+           esbuild publint knip jscpd vitepress oxlint prettier playwright-core; do
+    rm -f "$RES/dsh/node_modules/$t"
+  done
 fi
 
 # -- 2. standalone Node runtime --------------------------------------------

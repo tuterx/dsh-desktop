@@ -69,6 +69,7 @@
     "dmg": {
       "title": "DeepSeek Harness",
       "artifactName": "DeepSeek-Harness-${version}-${arch}.${ext}"
-    }
+    },
+    "compression": "maximum"
   }
 }
