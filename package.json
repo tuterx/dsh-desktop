@@ -29,7 +29,15 @@
     "extraResources": [
       {
         "from": "resources/dsh",
-        "to": "dsh"
+        "to": "dsh",
+        "filter": [
+          "**/*",
+          "!.git/**",
+          "!**/tests/**",
+          "!**/stress-tests/**",
+          "!**/*.map",
+          "!**/*.tsbuildinfo"
+        ]
       },
       {
         "from": "resources/node",

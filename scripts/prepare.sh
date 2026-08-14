@@ -70,6 +70,27 @@ else
   cd "$ROOT"
 fi
 
+# -- 1a. prune dev-only tooling from node_modules (runtime closure only) ----
+# The monorepo's dev toolchain (typescript, vite, vitest, tsdown, eslint,
+# lefthook, ...) is never imported at runtime; deleting it trims ~300MB from
+# the packaged app. The CI smoke step boots the web server afterwards, so a
+# future upstream change that starts requiring one of these fails CI instead
+# of shipping a broken app. Idempotent - safe on every prepare run.
+if [ -d "$RES/dsh/node_modules/.pnpm" ]; then
+  echo "[prune] removing dev-only tooling from node_modules..."
+  (cd "$RES/dsh/node_modules" && find .pnpm -maxdepth 1 -type d \( \
+      -name "typescript@*" -o -name "vite@*" -o -name "vitest@*" -o -name "tsdown@*" \
+      -o -name "eslint@*" -o -name "lefthook@*" -o -name "tsx@*" -o -name "rolldown*" \
+      -o -name "jiti@*" -o -name "lightningcss@*" -o -name "esbuild@*" -o -name "@esbuild*" \
+      -o -name "publint@*" -o -name "knip@*" -o -name "jscpd@*" -o -name "vitepress@*" \
+      -o -name "oxlint*" -o -name "@oxlint*" -o -name "@rolldown*" -o -name "@types+*" \
+      -o -name "playwright*" -o -name "@eslint+*" -o -name "prettier*" \) -exec rm -rf {} + 2>/dev/null; \
+    for t in typescript vite vitest tsdown eslint lefthook tsx rolldown jiti lightningcss \
+             esbuild publint knip jscpd vitepress oxlint prettier playwright-core; do \
+      [ -L "$t" ] && rm -f "$t"; \
+    done)
+fi
+
 # -- 2. standalone Node runtime --------------------------------------------
 NODE_TAR="node-$NODE_VERSION-$NODE_PLATFORM"
 NODE_URL="$NODE_MIRROR/$NODE_VERSION/$NODE_TAR.tar.gz"

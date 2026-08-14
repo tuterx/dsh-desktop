@@ -57,6 +57,22 @@ jobs:
           ELECTRON_MIRROR: https://cdn.npmmirror.com/binaries/electron/
           APP_SHA: ${{ github.sha }}
 
+      # prepare.sh prunes dev-only tooling from node_modules (~300MB); boot
+      # the trimmed runtime exactly like the app launcher does, so a future
+      # upstream change that starts requiring a pruned package fails CI
+      # instead of shipping a broken app.
+      - name: Smoke test trimmed runtime
+        run: |
+          (cd resources/dsh && ../node/bin/node apps/cli/lib/bin.js web --host 127.0.0.1 --port 9988 > /tmp/dsh-smoke.log 2>&1 & echo $! > /tmp/dsh-smoke.pid)
+          OK=0
+          for i in $(seq 1 90); do
+            if curl -sf --noproxy "*" -o /dev/null http://127.0.0.1:9988/; then OK=1; break; fi
+            sleep 1
+          done
+          kill $(cat /tmp/dsh-smoke.pid) 2>/dev/null || true
+          if [ "$OK" != "1" ]; then echo "SMOKE FAILED:"; tail -20 /tmp/dsh-smoke.log; exit 1; fi
+          curl -s --noproxy "*" http://127.0.0.1:9988/ | grep -q "__DSH_BOOT__" && echo "SMOKE OK: page serves"
+
       - name: Read build metadata
         id: upstream
         run: |
