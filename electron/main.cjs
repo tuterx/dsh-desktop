@@ -17,7 +17,7 @@
  *      period — no orphan processes survive
  */
 
-const { app, BrowserWindow, Menu, shell, dialog } = require('electron')
+const { app, BrowserWindow, Menu, shell, dialog, session } = require('electron')
 const { spawn } = require('node:child_process')
 const { createServer } = require('node:net')
 const http = require('node:http')
@@ -264,6 +264,23 @@ function buildMenu() {
       { role: 'togglefullscreen', label: '全屏' },
     ],
   }
+  // REQUIRED on macOS: clipboard shortcuts (Cmd+C/V/X) only work when the
+  // menu declares the standard edit roles. Without this menu, paste silently
+  // fails everywhere in the app.
+  const edit = {
+    label: '编辑',
+    submenu: [
+      { role: 'undo', label: '撤销' },
+      { role: 'redo', label: '重做' },
+      { type: 'separator' },
+      { role: 'cut', label: '剪切' },
+      { role: 'copy', label: '复制' },
+      { role: 'paste', label: '粘贴' },
+      { role: 'pasteAndMatchStyle', label: '粘贴并匹配样式' },
+      { role: 'delete', label: '删除' },
+      { role: 'selectAll', label: '全选' },
+    ],
+  }
   const template = isMac
     ? [
         {
@@ -278,11 +295,13 @@ function buildMenu() {
             { role: 'quit', label: '退出' },
           ],
         },
+        edit,
         view,
         { role: 'windowMenu', label: '窗口' },
       ]
     : [
         { label: '文件', submenu: [{ role: 'quit', label: '退出' }] },
+        edit,
         view,
         { role: 'windowMenu', label: '窗口' },
       ]
@@ -292,6 +311,15 @@ function buildMenu() {
 // ── bootstrap ─────────────────────────────────────────────────────────────
 async function bootstrap() {
   buildMenu()
+
+  // Allow clipboard access: modern Electron denies unhandled permission
+  // requests by default, which breaks navigator.clipboard.readText() used by
+  // the dsh UI (e.g. "copy code block"). Paste into inputs itself is covered
+  // by the Edit menu roles, but these permissions keep the web APIs working.
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
+    callback(/^clipboard/.test(permission) || permission === 'fullscreen')
+  })
+
   showSplash()
   try {
     const port = await pickPort()
