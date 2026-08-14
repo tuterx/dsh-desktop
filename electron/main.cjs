@@ -17,7 +17,7 @@
  *      period — no orphan processes survive
  */
 
-const { app, BrowserWindow, Menu, shell, dialog, session } = require('electron')
+const { app, BrowserWindow, Menu, shell, dialog, session, nativeTheme } = require('electron')
 const { spawn } = require('node:child_process')
 const { createServer } = require('node:net')
 const http = require('node:http')
@@ -202,6 +202,11 @@ function createWindow(url) {
     minWidth: 900,
     minHeight: 600,
     title: 'DeepSeek Harness',
+    // hiddenInset: no title bar row - the traffic lights float over the
+    // content (VS Code style), so the dark dsh UI owns the whole window.
+    // Traffic lights sit on the dsh sidebar's top-left, away from content.
+    titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 14, y: 14 },
     backgroundColor: '#0b0e14',
     show: false,
     webPreferences: {
@@ -311,6 +316,10 @@ function buildMenu() {
 // ── bootstrap ─────────────────────────────────────────────────────────────
 async function bootstrap() {
   buildMenu()
+
+  // The dsh UI is dark (#0b0e14); force system-dark so native chrome
+  // (scrollbars, context menus, dialogs) matches instead of flashing white.
+  nativeTheme.themeSource = 'dark'
 
   // Allow clipboard access: modern Electron denies unhandled permission
   // requests by default, which breaks navigator.clipboard.readText() used by

@@ -17,7 +17,7 @@
  * 4. Manage the BrowserWindow lifecycle.
  */
 
-const { app, BrowserWindow, protocol, ipcMain, session, shell, Menu } = require('electron')
+const { app, BrowserWindow, protocol, ipcMain, session, shell, Menu, nativeTheme } = require('electron')
 const { net } = require('electron')
 const path = require('node:path')
 const http = require('node:http')
@@ -152,6 +152,8 @@ function createWindow() {
     minWidth: 900,
     minHeight: 600,
     title: 'DeepSeek Harness',
+    titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 14, y: 14 },
     backgroundColor: '#0b0e14',
     show: false,
     webPreferences: {
@@ -313,6 +315,7 @@ if (!gotLock) {
     })
 
     buildMenu()
+    nativeTheme.themeSource = 'dark'
     createWindow()
   })
 
