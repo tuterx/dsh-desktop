@@ -1,0 +1,56 @@
+{
+  "name": "dsh-desktop",
+  "productName": "DeepSeek Harness",
+  "version": "0.1.0",
+  "description": "Desktop app for DeepSeek Harness (dsh) - auto-built from the latest upstream, packaged as a native macOS app.",
+  "main": "electron/main.cjs",
+  "author": "dsh-desktop",
+  "license": "MIT",
+  "scripts": {
+    "prepare:resources": "bash scripts/prepare.sh",
+    "icon": "bash scripts/icon.sh",
+    "start": "electron .",
+    "dist": "bash scripts/build-dmg.sh"
+  },
+  "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "com.dsh.desktop",
+    "productName": "DeepSeek Harness",
+    "directories": {
+      "output": "release"
+    },
+    "afterPack": "build/afterPack.js",
+    "files": [
+      "electron/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/dsh",
+        "to": "dsh"
+      },
+      {
+        "from": "resources/node",
+        "to": "node"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["arm64"]
+        }
+      ],
+      "icon": "assets/icon.icns",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false
+    },
+    "dmg": {
+      "title": "DeepSeek Harness",
+      "artifactName": "DeepSeek-Harness-${version}-${arch}.${ext}"
+    }
+  }
+}
