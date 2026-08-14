@@ -116,13 +116,14 @@ jobs:
           SHORT="${COMMIT:0:12}"
           DMG=$(ls -t release/*.dmg | head -1)
           ZIP=$(ls -t release/*-mac.zip | head -1)
-          # A concurrent run may have published this exact build while we
-          # were building; the content is identical, so skipping is right.
+          # The other platform workflow may have published this same tag
+          # first (concurrent builds) - add our assets instead of skipping,
+          # so every release carries both platforms' files.
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "release $TAG already exists (published by a concurrent run) - skipping"
-            exit 0
-          fi
-          gh release create "$TAG" "$DMG" "$ZIP" \
+            echo "release $TAG exists - uploading missing assets"
+            gh release upload "$TAG" "$DMG" "$ZIP" --clobber
+          else
+            gh release create "$TAG" "$DMG" "$ZIP" \
             --title "DeepSeek Harness desktop @ upstream ${SHORT}" \
             --notes "Auto-built from deepseek-harness @ ${COMMIT}" \
             --latest

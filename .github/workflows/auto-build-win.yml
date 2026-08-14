@@ -95,13 +95,15 @@ jobs:
           TAG="${{ steps.check.outputs.tag }}"
           SHORT="${COMMIT:0:12}"
           ZIP=$(ls -t release/*-win-x64.zip | head -1)
-          # A concurrent run may have published this exact build while we
-          # were building; the content is identical, so skipping is right.
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "release $TAG already exists (published by a concurrent run) - skipping"
-            exit 0
+            # The other platform workflow may have published this same tag
+            # first (concurrent builds) — add our asset instead of skipping,
+            # so every release carries both platforms' files.
+            gh release upload "$TAG" "$ZIP" --clobber
+            echo "uploaded zip to existing release $TAG"
+          else
+            gh release create "$TAG" "$ZIP" \
+              --title "DeepSeek Harness desktop @ upstream ${SHORT}" \
+              --notes "Auto-built from deepseek-harness @ ${COMMIT} (Windows zip)" \
+              --latest
           fi
-          gh release create "$TAG" "$ZIP" \
-            --title "DeepSeek Harness desktop @ upstream ${SHORT}" \
-            --notes "Auto-built from deepseek-harness @ ${COMMIT} (Windows zip)" \
-            --latest
