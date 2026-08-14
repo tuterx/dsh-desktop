@@ -109,9 +109,14 @@ if [ -d "$RES/dsh/node_modules/.pnpm" ]; then
       -o -name "publint@*" -o -name "knip@*" -o -name "jscpd@*" -o -name "vitepress@*" \
       -o -name "oxlint*" -o -name "@oxlint*" -o -name "@rolldown*" -o -name "@types+*" \
       -o -name "playwright*" -o -name "@eslint+*" -o -name "prettier*" \) -exec rm -rf {} + 2>/dev/null || true)
+  # Top-level entries are symlinks on macOS but REAL DIRECTORIES in the
+  # Windows hoisted layout — rm -f cannot remove a directory, so use rm -rf
+  # there. Failures are tolerable (idempotent prune, set -e-safe).
+  RM_TOP="rm -f"
+  [ "$IS_WIN" -eq 1 ] && RM_TOP="rm -rf"
   for t in typescript vite vitest tsdown eslint lefthook tsx rolldown jiti lightningcss \
            esbuild publint knip jscpd vitepress oxlint prettier playwright-core; do
-    rm -f "$RES/dsh/node_modules/$t"
+    $RM_TOP "$RES/dsh/node_modules/$t" 2>/dev/null || true
   done
 fi
 
