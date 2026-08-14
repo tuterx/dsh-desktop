@@ -532,6 +532,7 @@ async function bootstrap() {
   ipcMain.on('update:open-installer', () => {
     if (downloadedDmg) updater.openInstaller(downloadedDmg)
   })
+  ipcMain.on('update:check', () => { checkForUpdate(false) }) // badge retry
   setTimeout(() => { checkForUpdate(true) }, updater.CHECK_DELAY_MS)
   updateTimer = setInterval(() => { checkForUpdate(true) }, updater.CHECK_INTERVAL_MS)
 
