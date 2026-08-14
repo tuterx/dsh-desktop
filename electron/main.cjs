@@ -211,6 +211,11 @@ function setAppearance(patch) {
   applyAppearance()
 }
 
+// Follow the OS theme live when appearance.theme === 'system'.
+nativeTheme.on('updated', () => {
+  if (appearance.load().theme === 'system') applyAppearance()
+})
+
 // ── windows ──────────────────────────────────────────────────────────────
 function showSplash() {
   splashWindow = new BrowserWindow({

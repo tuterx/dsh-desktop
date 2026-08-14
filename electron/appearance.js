@@ -21,7 +21,7 @@ const { readFileSync, writeFileSync, mkdirSync } = require('node:fs')
 const { join } = require('node:path')
 
 const DEFAULTS = {
-  theme: 'dark', // 'dark' | 'light' | 'system'
+  theme: 'system', // 'dark' | 'light' | 'system' — follow the OS by default
   fontSize: 'normal', // 'small' | 'normal' | 'large' | 'xlarge'
   fontFamily: 'system', // 'system' | 'rounded' | 'mono'
   wallpaper: 'none', // 'none' | 'gradient-dark' | 'gradient-light' | 'custom:<path>'

@@ -4,10 +4,10 @@
  * Preload - runs in the isolated context before the dsh page loads.
  *
  * Provides:
- *  - the update badge: a blue SVG download icon pinned to the bottom-left
- *    of the dsh UI. Shows when the updater finds a newer build; clicking it
- *    downloads the new DMG (progress ring while downloading), then opens it
- *    for installation.
+ *  - the update badge: a blue SVG download icon pinned to the bottom-right
+ *    (same row as the dsh sidebar's settings button). Shows when the updater
+ *    finds a newer build; clicking it downloads the new DMG (progress ring
+ *    while downloading), then opens it for installation.
  *  - a tiny dshDesktop descriptor for shell integration.
  *
  * The isolated world shares the page DOM, so the badge is injected here and
@@ -17,11 +17,12 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
 // ── update badge ─────────────────────────────────────────────────────────
+// Bottom-right, on the same row as the dsh sidebar's settings button.
 const BADGE_STYLE = `
 .dsh-update-badge {
   position: fixed;
-  left: 14px;
-  bottom: 60px;
+  right: 16px;
+  bottom: 14px;
   width: 38px;
   height: 38px;
   border-radius: 12px;
@@ -78,15 +79,13 @@ const ARROW_SVG = `
 
 let badge = null
 let badgeState = 'hidden' // hidden | ready | downloading | done | error
-let tooltipText = ''
 
 function ensureBadge() {
   if (badge) return badge
-  // style
   const style = document.createElement('style')
   style.textContent = BADGE_STYLE
-  document.head.appendChild(style)
-  // ring svg for progress
+  ;(document.head || document.documentElement).appendChild(style)
+
   const ring = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
   ring.setAttribute('class', 'dsh-update-ring')
   ring.setAttribute('viewBox', '0 0 38 38')
@@ -96,7 +95,7 @@ function ensureBadge() {
   circle.setAttribute('stroke-dasharray', `${2 * Math.PI * 15}`)
   circle.setAttribute('stroke-dashoffset', `${2 * Math.PI * 15}`)
   ring.appendChild(circle)
-  // badge button
+
   badge = document.createElement('button')
   badge.className = 'dsh-update-badge'
   badge.innerHTML = ARROW_SVG
@@ -111,7 +110,7 @@ function ensureBadge() {
       ipcRenderer.send('update:open-installer')
     }
   })
-  document.body.appendChild(badge)
+  ;(document.body || document.documentElement).appendChild(badge)
   return badge
 }
 
@@ -155,7 +154,6 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   platform: process.platform,
   electron: process.versions.electron,
   node: process.versions.node,
-  // 供页面查询更新状态（可选扩展）
   updater: {
     onAvailable: (cb) => ipcRenderer.on('update:available', (_e, i) => cb(i)),
     onProgress: (cb) => ipcRenderer.on('update:progress', (_e, p) => cb(p)),
