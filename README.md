@@ -1,7 +1,9 @@
 # dsh-desktop
 
 把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）
-打包成原生 **macOS / Windows** 桌面应用，并**自动跟随上游仓库更新**。
+打包成原生 **macOS / Windows 桌面应用**，并**自动跟随上游仓库更新**。
+核心是桌面端（Electron 壳 + 内嵌 dsh 运行时，零依赖、离线可用）；仓库同时
+包含 beta 插件 `plugins/dsh-host-electron`（以 dsh 原生插件方式运行桌面端）。
 
 ## 产物
 
