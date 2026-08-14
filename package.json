@@ -38,6 +38,10 @@
       {
         "from": "resources/UPSTREAM_COMMIT",
         "to": "UPSTREAM_COMMIT"
+      },
+      {
+        "from": "resources/APP_BUILD",
+        "to": "APP_BUILD"
       }
     ],
     "mac": {
@@ -45,7 +49,9 @@
       "target": [
         {
           "target": "dmg",
-          "arch": ["arm64"]
+          "arch": [
+            "arm64"
+          ]
         }
       ],
       "icon": "assets/icon.icns",

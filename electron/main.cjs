@@ -455,7 +455,10 @@ function buildMenu() {
 // ── auto-update ───────────────────────────────────────────────────────────
 let updateTimer = null
 let latestRelease = null
-let downloadedDmg = null
+let downloadedDmg = null // dmg fallback path only
+let downloading = false
+let installStarted = false
+let pendingUpdate = null // { tag, zipPath, target } - ready for in-place install
 
 /** Notify the page's update badge about an update state. */
 function sendUpdate(channel, payload) {
@@ -467,7 +470,9 @@ function sendUpdate(channel, payload) {
 /**
  * Check GitHub for a newer build. When silent, only the log records the
  * outcome; otherwise the page badge shows the result (blue = update ready,
- * green = already latest, tooltip = error).
+ * green = already latest, tooltip = error). A newer build starts downloading
+ * in the background right away (Codex-style: download while you work, apply
+ * at quit or on click).
  */
 async function checkForUpdate(silent = false) {
   try {
@@ -481,6 +486,8 @@ async function checkForUpdate(silent = false) {
     if (updater.hasUpdate(latest)) {
       writeLog(`发现新版本: ${latest.tag} (当前 ${updater.bundledCommit().slice(0, 12)}/${updater.bundledAppBuild()})`)
       sendUpdate('update:available', { ...latest, shortCommit: latest.upstream })
+      // Seamless auto-download (packaged only; dev has no install target).
+      if (app.isPackaged) setTimeout(() => { performUpdate() }, 1500)
     } else {
       writeLog('已是最新版本')
       if (!silent) sendUpdate('update:uptodate', { shortCommit: latest.upstream })
@@ -491,31 +498,80 @@ async function checkForUpdate(silent = false) {
   }
 }
 
-/** Download the new DMG with progress → notify → open installer when done. */
+/**
+ * Download the new build in the background (zip → in-place install; dmg →
+ * download-and-open fallback). Notifies the badge along the way.
+ */
 async function performUpdate() {
-  if (!latestRelease || downloadedDmg) return
+  const latest = latestRelease
+  if (!latest || downloading || installStarted) return
+  // Already staged for this tag (also covers a restart with the zip on disk).
+  if (pendingUpdate && pendingUpdate.tag === latest.tag) {
+    sendUpdate('update:done', { kind: latest.kind, shortCommit: latest.upstream })
+    return
+  }
+  if (latest.kind === 'zip') {
+    const zipPath = updater.assetPath(latest.tag, latest.assetName)
+    const { statSync } = require('node:fs')
+    try { if (statSync(zipPath).size === latest.size) { stageZip(latest, zipPath); return } } catch { /* download */ }
+  }
+  downloading = true
   try {
-    writeLog(`开始下载: ${latestRelease.assetName}`)
-    downloadedDmg = await updater.downloadDmg(latestRelease, (percent) => {
+    writeLog(`开始下载: ${latest.assetName}`)
+    const file = await updater.downloadUpdate(latest, (percent) => {
       sendUpdate('update:progress', percent)
     })
-    writeLog(`下载完成: ${downloadedDmg}`)
-    sendUpdate('update:done', { path: downloadedDmg, shortCommit: latestRelease.commit.slice(0, 12) })
-    const choice = await dialog.showMessageBox(mainWindow, {
-      type: 'info',
-      title: '更新已下载',
-      message: `新版本 (${latestRelease.commit.slice(0, 12)}) 已下载到:`,
-      detail: downloadedDmg,
-      buttons: ['立即安装', '稍后'],
-      defaultId: 0,
-      cancelId: 1,
-    })
-    if (choice.response === 0) updater.openInstaller(downloadedDmg)
+    if (latest.kind === 'zip') {
+      stageZip(latest, file)
+    } else {
+      downloadedDmg = file
+      writeLog(`下载完成: ${file}（dmg 手动安装）`)
+      sendUpdate('update:done', { kind: 'dmg', shortCommit: latest.upstream })
+    }
   } catch (err) {
     writeLog(`下载失败: ${err.message}`)
     sendUpdate('update:error', err.message)
-    downloadedDmg = null
+  } finally {
+    downloading = false
   }
+}
+
+/** Mark a downloaded zip as ready; the badge switches to "restart to apply". */
+function stageZip(latest, zipPath) {
+  pendingUpdate = { tag: latest.tag, zipPath, target: updater.bundlePath() }
+  writeLog(`更新就绪: ${latest.tag} (${zipPath})`)
+  sendUpdate('update:done', { kind: 'zip', shortCommit: latest.upstream })
+}
+
+/**
+ * Apply the staged zip: spawn the detached swap helper (it waits for this
+ * process to exit, swaps Contents, relaunches) and quit.
+ */
+function installNow() {
+  if (!pendingUpdate || !pendingUpdate.target || installStarted) return
+  installStarted = true
+  const updatesDir = updater.updatesDir()
+  const scriptPath = join(updatesDir, 'install.sh')
+  const logPath = join(updatesDir, 'install.log')
+  try {
+    const { writeFileSync, mkdirSync } = require('node:fs')
+    mkdirSync(updatesDir, { recursive: true })
+    writeFileSync(scriptPath, updater.installScript(), { mode: 0o755 })
+  } catch (err) {
+    writeLog(`安装脚本写入失败: ${err.message}`)
+    installStarted = false
+    return
+  }
+  writeLog(`开始安装: ${pendingUpdate.tag}`)
+  const child = spawn('/bin/sh', [
+    scriptPath,
+    String(process.pid),
+    pendingUpdate.zipPath,
+    pendingUpdate.target,
+    logPath,
+  ], { detached: true, stdio: 'ignore' })
+  child.unref()
+  app.quit()
 }
 
 // ── bootstrap ─────────────────────────────────────────────────────────────
@@ -528,11 +584,30 @@ async function bootstrap() {
 
   // Auto-update: check shortly after launch (silent - no badge when already
   // latest), then periodically; the 检查更新… menu item checks on demand.
+  // A detected update auto-downloads in the background; applying happens on
+  // quit (seamless) or via the badge's restart button.
   ipcMain.on('update:download', () => { performUpdate() })
   ipcMain.on('update:open-installer', () => {
     if (downloadedDmg) updater.openInstaller(downloadedDmg)
   })
   ipcMain.on('update:check', () => { checkForUpdate(false) }) // badge retry
+  ipcMain.on('update:install', async () => {
+    if (!pendingUpdate) return
+    const choice = await dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      title: '更新就绪',
+      message: `新版本 (${pendingUpdate.tag}) 已下载完成`,
+      detail: '重启应用以完成更新，重启后即为最新版本。',
+      buttons: ['立即重启更新', '稍后'],
+      defaultId: 0,
+      cancelId: 1,
+    })
+    if (choice.response === 0) installNow()
+  })
+  // Seamless: quitting with a staged update applies it automatically.
+  app.on('before-quit', () => {
+    if (pendingUpdate && !installStarted) installNow()
+  })
   setTimeout(() => { checkForUpdate(true) }, updater.CHECK_DELAY_MS)
   updateTimer = setInterval(() => { checkForUpdate(true) }, updater.CHECK_INTERVAL_MS)
 

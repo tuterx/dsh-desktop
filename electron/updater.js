@@ -4,7 +4,8 @@
  * Auto-update checks for the dsh desktop app.
  *
  * The CI workflow publishes one GitHub Release per build
- * (tag "dsh-<upstream12><app7>", asset DeepSeek-Harness-*.dmg), where:
+ * (tag "dsh-<upstream12><app7>", assets DeepSeek-Harness-*-mac.zip + .dmg),
+ * where:
  *   - upstream12 = first 12 hex of the bundled upstream deepseek-harness commit
  *   - app7       = first 7 hex of the dsh-desktop repo commit that built the shell
  *
@@ -12,11 +13,12 @@
  *   1. compares the CURRENT bundled identity (resources/UPSTREAM_COMMIT +
  *      resources/APP_BUILD) with the LATEST release tag on
  *      github.com/tuterx/dsh-desktop
- *   2. downloads the new DMG to ~/Downloads with progress events
+ *   2. downloads the new build to <userData>/updates/<tag>/ with progress events
  *
- * Updating is download-and-open (not silent): the DMG is unsigned, so
- * Squirrel-style auto-install is not possible. The user installs the new
- * build from the downloaded DMG.
+ * Updating is SEAMLESS (Codex-style): the zip is extracted and swapped in
+ * place by a detached helper after the app quits, then the app relaunches -
+ * no DMG, no re-install. The DMG remains as a manual-install fallback for
+ * releases that carry no zip (kind === 'dmg' → download-and-open).
  *
  * Backward compatibility: the first release used the full 40-hex upstream
  * commit as the tag (no app part). parseTag tolerates it (app === null) and
@@ -25,8 +27,8 @@
  */
 
 const { app, shell } = require('electron')
-const { createWriteStream } = require('node:fs')
-const { join } = require('node:path')
+const { createWriteStream, mkdirSync } = require('node:fs')
+const { join, resolve } = require('node:path')
 const https = require('node:https')
 const { net } = require('electron')
 
@@ -70,6 +72,26 @@ function parseTag(tag) {
   return legacy ? { upstream: legacy[1].slice(0, 12), app: null } : null
 }
 
+/**
+ * The running .app bundle - the target of an in-place update. Only meaningful
+ * when packaged (dev runs from electron/dist, which must never be swapped).
+ */
+function bundlePath() {
+  return app.isPackaged ? resolve(process.resourcesPath, '..', '..') : null
+}
+
+/** Per-release staging directory for downloaded artifacts. */
+function updatesDir() {
+  return join(app.getPath('userData'), 'updates')
+}
+
+/**
+ * Where a downloaded asset for `tag` lives (or would live).
+ */
+function assetPath(tag, assetName) {
+  return join(updatesDir(), tag, assetName)
+}
+
 /** Fetch the latest release info from GitHub. Returns null on failure. */
 function fetchLatestRelease() {
   return new Promise((resolve) => {
@@ -89,12 +111,17 @@ function fetchLatestRelease() {
           const data = JSON.parse(body)
           const tag = String(data.tag_name || '')
           const id = parseTag(tag)
-          const asset = (data.assets || []).find((a) => a.name.endsWith('.dmg'))
+          // Prefer the zip (seamless in-place update); the DMG is the
+          // manual-install fallback for older releases.
+          const assets = data.assets || []
+          const asset = assets.find((a) => /\.zip$/.test(a.name) && /-mac\.zip$/.test(a.name))
+            || assets.find((a) => a.name.endsWith('.dmg'))
           resolve(id && asset ? {
             upstream: id.upstream,
             app: id.app,
             tag,
             name: data.name || tag,
+            kind: /\.zip$/.test(asset.name) ? 'zip' : 'dmg',
             assetUrl: asset.browser_download_url,
             assetName: asset.name,
             size: asset.size,
@@ -122,11 +149,20 @@ function hasUpdate(latest, current = bundledCommit(), currentApp = bundledAppBui
 }
 
 /**
- * Download the release DMG to ~/Downloads, reporting progress via onProgress.
+ * Download the release asset (zip preferred, dmg fallback) to
+ * <userData>/updates/<tag>/, reporting progress via onProgress.
  * @returns the downloaded file path.
  */
-async function downloadDmg(latest, onProgress) {
-  const target = join(app.getPath('downloads'), latest.assetName)
+async function downloadUpdate(latest, onProgress) {
+  const target = assetPath(latest.tag, latest.assetName)
+  mkdirSync(join(updatesDir(), latest.tag), { recursive: true })
+
+  // Already downloaded in a previous session? Skip the transfer.
+  const { statSync } = require('node:fs')
+  try {
+    if (statSync(target).size === latest.size) return target
+  } catch { /* not present - download */ }
+
   const response = await net.fetch(latest.assetUrl, { redirect: 'follow' })
   if (!response.ok) throw new Error(`下载失败: HTTP ${response.status}`)
 
@@ -149,7 +185,48 @@ async function downloadDmg(latest, onProgress) {
   return target
 }
 
-/** Open the downloaded DMG for installation. */
+/**
+ * The detached helper that performs the in-place swap: waits for the old app
+ * process to exit, unpacks the zip next to the bundle (same volume), swaps
+ * Contents atomically (mv = rename), and relaunches. Launched by the main
+ * process right before app.quit(), it survives the parent's exit.
+ */
+function installScript() {
+  return `#!/bin/sh
+# dsh-desktop in-place updater (detached helper, spawned before quit)
+OLD_PID="$1"; ZIP="$2"; TARGET="$3"; LOG="$4"
+echo "[updater] start old_pid=$OLD_PID zip=$ZIP target=$TARGET" >> "$LOG"
+i=0
+while kill -0 "$OLD_PID" 2>/dev/null; do
+  i=$((i+1))
+  [ "$i" -gt 90 ] && { echo "[updater] timeout waiting for old app" >> "$LOG"; exit 1; }
+  sleep 1
+done
+sleep 1
+TMP="$TARGET/.update.tmp"
+rm -rf "$TMP"
+if ! ditto -x -k "$ZIP" "$TMP" 2>>"$LOG"; then
+  echo "[updater] extract failed" >> "$LOG"
+  rm -rf "$TMP"; open "$TARGET"; exit 1
+fi
+APP_IN="$(find "$TMP" -maxdepth 2 -type d -name "*.app" | head -1)"
+if [ -z "$APP_IN" ] || [ ! -d "$APP_IN/Contents/MacOS" ]; then
+  echo "[updater] bad payload" >> "$LOG"
+  rm -rf "$TMP"; open "$TARGET"; exit 1
+fi
+rm -rf "$TARGET/Contents"
+if ! mv "$APP_IN/Contents" "$TARGET/Contents" 2>>"$LOG"; then
+  echo "[updater] swap failed" >> "$LOG"
+  rm -rf "$TMP"; open "$TARGET"; exit 1
+fi
+rm -rf "$TMP"
+echo "[updater] swapped" >> "$LOG"
+open "$TARGET"
+echo "[updater] relaunched" >> "$LOG"
+`
+}
+
+/** Open the downloaded DMG for manual installation (dmg fallback). */
 function openInstaller(dmgPath) {
   return shell.openPath(dmgPath)
 }
@@ -161,8 +238,12 @@ module.exports = {
   bundledCommit,
   bundledAppBuild,
   parseTag,
+  bundlePath,
+  updatesDir,
+  assetPath,
   fetchLatestRelease,
   hasUpdate,
-  downloadDmg,
+  downloadUpdate,
+  installScript,
   openInstaller,
 }

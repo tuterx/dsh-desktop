@@ -80,11 +80,13 @@ jobs:
             echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build DMG
+      - name: Build DMG + ZIP
         if: steps.check.outputs.exists != 'true'
         # --publish never: electron-builder in CI tries to auto-publish and
         # fails without GH_TOKEN; publishing is done by the release step below.
-        run: npm install && npx electron-builder --mac dmg --arm64 --publish never
+        # The ZIP is the seamless in-app update payload; the DMG stays as the
+        # manual-install fallback.
+        run: npm install && npx electron-builder --mac dmg zip --arm64 --publish never
         env:
           ELECTRON_MIRROR: https://cdn.npmmirror.com/binaries/electron/
 
@@ -97,13 +99,14 @@ jobs:
           TAG="${{ steps.check.outputs.tag }}"
           SHORT="${COMMIT:0:12}"
           DMG=$(ls -t release/*.dmg | head -1)
+          ZIP=$(ls -t release/*-mac.zip | head -1)
           # A concurrent run may have published this exact build while we
           # were building; the content is identical, so skipping is right.
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "release $TAG already exists (published by a concurrent run) - skipping"
             exit 0
           fi
-          gh release create "$TAG" "$DMG" \
+          gh release create "$TAG" "$DMG" "$ZIP" \
             --title "DeepSeek Harness desktop @ upstream ${SHORT}" \
             --notes "Auto-built from deepseek-harness @ ${COMMIT}" \
             --latest

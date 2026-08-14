@@ -178,6 +178,7 @@ const RING_LEN = 2 * Math.PI * RING_R
 
 let badge = null
 let badgeState = 'hidden' // hidden | ready | downloading | done | error | uptodate
+let doneKind = 'zip' // last completed update's kind: zip (in-place) | dmg (manual)
 let pulsed = false // one attention pulse per session
 let uptodateTimer = null
 let positionStarted = false
@@ -283,7 +284,8 @@ function ensureBadge() {
     if (badgeState === 'ready') {
       ipcRenderer.send('update:download')
     } else if (badgeState === 'done') {
-      ipcRenderer.send('update:open-installer')
+      // zip: restart-and-apply in place; dmg: open the installer manually.
+      ipcRenderer.send(doneKind === 'zip' ? 'update:install' : 'update:open-installer')
     } else if (badgeState === 'error') {
       ipcRenderer.send('update:check') // retry the check
     }
@@ -343,13 +345,16 @@ function showBadge(state, text, percent) {
 
 // ── IPC wiring ────────────────────────────────────────────────────────────
 ipcRenderer.on('update:available', (_e, info) => {
-  showBadge('ready', `新版本 ${info.shortCommit} 可用\n点击下载更新`, 0)
+  showBadge('ready', `新版本 ${info.shortCommit} 可用，自动下载中…`, 0)
 })
 ipcRenderer.on('update:progress', (_e, percent) => {
-  showBadge('downloading', `正在下载 ${percent}%`, percent)
+  showBadge('downloading', `正在下载更新 ${percent}%`, percent)
 })
 ipcRenderer.on('update:done', (_e, info) => {
-  showBadge('done', '下载完成，点击安装', 100)
+  doneKind = info.kind || 'zip'
+  showBadge('done', doneKind === 'zip'
+    ? '更新已就绪，点击重启安装'
+    : '下载完成，点击安装', 100)
 })
 ipcRenderer.on('update:error', (_e, message) => {
   showBadge('error', `检查失败: ${message}\n点击重试`, 0)
