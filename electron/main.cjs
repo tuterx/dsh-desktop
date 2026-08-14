@@ -23,6 +23,7 @@ const { createServer } = require('node:net')
 const http = require('node:http')
 const { existsSync, mkdirSync, createWriteStream } = require('node:fs')
 const { join } = require('node:path')
+const appearance = require('./appearance.js')
 
 const HOST = '127.0.0.1'
 const READY_TIMEOUT_MS = 120_000
@@ -35,6 +36,7 @@ let splashWindow = null
 let serverReady = false
 let quitting = false
 let logStream = null
+let insertedCssKeys = [] // injected appearance style keys, replaced on change
 
 // ── bundled runtime paths ────────────────────────────────────────────────
 // In dev (electron .) they live under ./resources; packaged they live under
@@ -179,6 +181,35 @@ function stopServer() {
   })
 }
 
+// ── appearance ────────────────────────────────────────────────────────────
+function applyAppearance(win = mainWindow) {
+  if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return
+  const cfg = appearance.load()
+
+  // System chrome (scrollbars, menus, dialogs) follows the theme.
+  nativeTheme.themeSource = cfg.theme === 'system' ? 'system' : cfg.theme
+  // dsh UI theme: body[data-ds-dark-theme] drives all dark CSS variables.
+  appearance.applyThemeToPage(win, appearance.isDark(cfg))
+
+  // Font size / family / wallpaper via injected CSS. Replace previous styles.
+  for (const key of insertedCssKeys) {
+    try { win.webContents.removeInsertedCSS(key) } catch { /* already gone */ }
+  }
+  insertedCssKeys = []
+  win.webContents.insertCSS(appearance.appearanceCss(cfg)).then((key) => {
+    insertedCssKeys.push(key)
+  }).catch(() => { /* page not ready */ })
+
+  // Keep the traffic lights clear of the sidebar's top-left logo row.
+  win.webContents.executeJavaScript(appearance.SIDEBAR_SAFE_ZONE_JS, true).catch(() => {})
+}
+
+function setAppearance(patch) {
+  const cfg = { ...appearance.load(), ...patch }
+  appearance.save(cfg)
+  applyAppearance()
+}
+
 // ── windows ──────────────────────────────────────────────────────────────
 function showSplash() {
   splashWindow = new BrowserWindow({
@@ -220,6 +251,9 @@ function createWindow(url) {
   mainWindow.once('ready-to-show', () => {
     mainWindow.show()
     if (splashWindow) { splashWindow.close(); splashWindow = null }
+  })
+  mainWindow.webContents.on('did-finish-load', () => {
+    applyAppearance(mainWindow)
   })
   mainWindow.loadURL(url)
   if (isDev) mainWindow.webContents.openDevTools({ mode: 'detach' })
@@ -269,6 +303,65 @@ function buildMenu() {
       { role: 'togglefullscreen', label: '全屏' },
     ],
   }
+  // Appearance settings: theme, font size, font family, wallpaper. Persisted
+  // to userData/appearance.json and applied via nativeTheme + injected CSS.
+  const radio = (label, value, current, click) => ({
+    label,
+    type: 'radio',
+    checked: value === current,
+    click: () => click(value),
+  })
+  const cfg = appearance.load()
+  const wallpaperItems = [
+    radio('无', 'none', cfg.wallpaper, (v) => setAppearance({ wallpaper: v })),
+    radio('深色渐变', 'gradient-dark', cfg.wallpaper, (v) => setAppearance({ wallpaper: v })),
+    radio('浅色渐变', 'gradient-light', cfg.wallpaper, (v) => setAppearance({ wallpaper: v })),
+    { type: 'separator' },
+    {
+      label: '选择图片…',
+      click: async () => {
+        const picked = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }] })
+        if (!picked.canceled && picked.filePaths[0]) {
+          setAppearance({ wallpaper: `custom:${picked.filePaths[0]}` })
+        }
+      },
+    },
+    ...(cfg.wallpaper.startsWith('custom:') ? [{ type: 'separator' }, { label: '移除自定义壁纸', click: () => setAppearance({ wallpaper: 'none' }) }] : []),
+  ]
+  const appearanceMenu = {
+    label: '外观',
+    submenu: [
+      {
+        label: '主题',
+        submenu: [
+          radio('浅色', 'light', cfg.theme, (v) => setAppearance({ theme: v })),
+          radio('深色', 'dark', cfg.theme, (v) => setAppearance({ theme: v })),
+          radio('跟随系统', 'system', cfg.theme, (v) => setAppearance({ theme: v })),
+        ],
+      },
+      {
+        label: '字号',
+        submenu: [
+          radio('小', 'small', cfg.fontSize, (v) => setAppearance({ fontSize: v })),
+          radio('标准', 'normal', cfg.fontSize, (v) => setAppearance({ fontSize: v })),
+          radio('大', 'large', cfg.fontSize, (v) => setAppearance({ fontSize: v })),
+          radio('特大', 'xlarge', cfg.fontSize, (v) => setAppearance({ fontSize: v })),
+        ],
+      },
+      {
+        label: '字体',
+        submenu: [
+          radio('系统', 'system', cfg.fontFamily, (v) => setAppearance({ fontFamily: v })),
+          radio('圆体', 'rounded', cfg.fontFamily, (v) => setAppearance({ fontFamily: v })),
+          radio('等宽', 'mono', cfg.fontFamily, (v) => setAppearance({ fontFamily: v })),
+        ],
+      },
+      {
+        label: '壁纸',
+        submenu: wallpaperItems,
+      },
+    ],
+  }
   // REQUIRED on macOS: clipboard shortcuts (Cmd+C/V/X) only work when the
   // menu declares the standard edit roles. Without this menu, paste silently
   // fails everywhere in the app.
@@ -301,12 +394,14 @@ function buildMenu() {
           ],
         },
         edit,
+        appearanceMenu,
         view,
         { role: 'windowMenu', label: '窗口' },
       ]
     : [
         { label: '文件', submenu: [{ role: 'quit', label: '退出' }] },
         edit,
+        appearanceMenu,
         view,
         { role: 'windowMenu', label: '窗口' },
       ]
@@ -317,9 +412,8 @@ function buildMenu() {
 async function bootstrap() {
   buildMenu()
 
-  // The dsh UI is dark (#0b0e14); force system-dark so native chrome
-  // (scrollbars, context menus, dialogs) matches instead of flashing white.
-  nativeTheme.themeSource = 'dark'
+  // System chrome follows the configured appearance (dark default).
+  nativeTheme.themeSource = appearance.load().theme === 'system' ? 'system' : appearance.load().theme
 
   // Allow clipboard access: modern Electron denies unhandled permission
   // requests by default, which breaks navigator.clipboard.readText() used by
