@@ -235,6 +235,7 @@ const RING_LEN = 2 * Math.PI * RING_R
 // ── state ─────────────────────────────────────────────────────────────────
 let badge = null
 let notify = null
+let notifyDismissed = false // user closed/ignored the card: never re-show it
 let badgeState = 'hidden' // hidden | ready | downloading | done | error | uptodate
 let doneKind = 'zip'
 let pulsed = false
@@ -336,6 +337,11 @@ function ensureNotify() {
 function showNotify(state, opts = {}) {
   const el = ensureNotify()
   const visible = state !== 'hidden'
+  // The user dismissed this card once — progress/done/error events fire
+  // constantly (every ~64KB while downloading) and would re-open it
+  // immediately after closing. Never nag again this session; the badge
+  // keeps indicating state.
+  if (notifyDismissed && visible) return
   el.classList.toggle('visible', visible)
   if (!visible) return
 
@@ -378,12 +384,14 @@ ${state === 'downloading' ? '' : `
     el.querySelector('.dsh-notify-progress > div').style.width = `${opts.percent ?? 0}%`
   }
   el.querySelector('.dsh-notify-close').addEventListener('click', () => {
+    notifyDismissed = true
     showNotify('hidden') // dismiss the card, keep the badge
   })
   for (const btn of el.querySelectorAll('.dsh-notify-btn')) {
     btn.addEventListener('click', () => {
       const action = btn.dataset.action
       if (action === 'notify:hide') {
+        notifyDismissed = true
         showNotify('hidden')
       } else if (action === 'update:ignore') {
         ipcRenderer.send('update:ignore')
