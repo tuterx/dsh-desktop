@@ -1,0 +1,107 @@
+name: auto-build-win
+
+# Builds a fresh Windows zip whenever upstream deepseek-harness changes, and
+# publishes it to the GitHub Release of this repo. Mirrors auto-build-dmg.yml
+# (same release identity: tag "dsh-<upstream12><app7>").
+#
+# Triggers:
+#   - schedule:  every 6 hours, checks upstream HEAD; skips when unchanged
+#   - workflow_dispatch: manual "Run workflow" button on GitHub
+#   - push:      rebuild when this repo's build tooling changes
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v7
+
+      - name: Setup Node 24 + pnpm
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - run: corepack enable && pnpm --version
+
+      - name: Cache pnpm store
+        uses: actions/cache@v6
+        with:
+          path: |
+            %LOCALAPPDATA%\pnpm\store
+            %LOCALAPPDATA%\electron\Cache
+            %LOCALAPPDATA%\electron-builder\Cache
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('resources/dsh/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+
+      - name: Prepare resources (pull upstream, build dsh, fetch Node)
+        shell: bash
+        run: bash scripts/prepare.sh --force
+        env:
+          NODE_MIRROR: https://npmmirror.com/mirrors/node
+          ELECTRON_MIRROR: https://cdn.npmmirror.com/binaries/electron/
+          ELECTRON_BUILDER_BINARIES_MIRROR: https://npmmirror.com/mirrors/electron-builder-binaries/
+          APP_SHA: ${{ github.sha }}
+
+      - name: Read build metadata
+        id: upstream
+        shell: bash
+        run: |
+          echo "commit=$(cat resources/UPSTREAM_COMMIT)" >> "$GITHUB_OUTPUT"
+          echo "app=$(cat resources/APP_BUILD)" >> "$GITHUB_OUTPUT"
+
+      # Release identity = "dsh-<upstream12><app7>": the in-app updater treats
+      # a change in EITHER part as a new build, so shell-code fixes ship too.
+      - name: Check existing release for this build
+        id: check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          COMMIT="${{ steps.upstream.outputs.commit }}"
+          APP="${{ steps.upstream.outputs.app }}"
+          TAG="dsh-${COMMIT:0:12}${APP}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build Windows zip
+        if: steps.check.outputs.exists != 'true'
+        shell: bash
+        run: bash scripts/build-win.sh
+        env:
+          ELECTRON_MIRROR: https://cdn.npmmirror.com/binaries/electron/
+          ELECTRON_BUILDER_BINARIES_MIRROR: https://npmmirror.com/mirrors/electron-builder-binaries/
+
+      - name: Publish release
+        if: steps.check.outputs.exists != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          COMMIT="${{ steps.upstream.outputs.commit }}"
+          TAG="${{ steps.check.outputs.tag }}"
+          SHORT="${COMMIT:0:12}"
+          ZIP=$(ls -t release/*-win-x64.zip | head -1)
+          # A concurrent run may have published this exact build while we
+          # were building; the content is identical, so skipping is right.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists (published by a concurrent run) - skipping"
+            exit 0
+          fi
+          gh release create "$TAG" "$ZIP" \
+            --title "DeepSeek Harness desktop @ upstream ${SHORT}" \
+            --notes "Auto-built from deepseek-harness @ ${COMMIT} (Windows zip)" \
+            --latest

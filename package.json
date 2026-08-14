@@ -10,7 +10,8 @@
     "prepare:resources": "bash scripts/prepare.sh",
     "icon": "bash scripts/icon.sh",
     "start": "electron .",
-    "dist": "bash scripts/build-dmg.sh"
+    "dist": "bash scripts/build-dmg.sh",
+    "dist:win": "bash scripts/build-win.sh"
   },
   "devDependencies": {
     "electron": "^35.0.0",
@@ -50,6 +51,14 @@
       {
         "from": "resources/APP_BUILD",
         "to": "APP_BUILD"
+      },
+      {
+        "from": "resources/pnpm-cli",
+        "to": "pnpm-cli"
+      },
+      {
+        "from": "resources/pnpm-store",
+        "to": "pnpm-store"
       }
     ],
     "mac": {
@@ -69,6 +78,15 @@
     "dmg": {
       "title": "DeepSeek Harness",
       "artifactName": "DeepSeek-Harness-${version}-${arch}.${ext}"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "dir",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "assets/icon.png"
     },
     "compression": "maximum"
   }

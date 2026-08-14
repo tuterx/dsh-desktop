@@ -4,8 +4,8 @@
  * Auto-update checks for the dsh desktop app.
  *
  * The CI workflow publishes one GitHub Release per build
- * (tag "dsh-<upstream12><app7>", assets DeepSeek-Harness-*-mac.zip + .dmg),
- * where:
+ * (tag "dsh-<upstream12><app7>", assets DeepSeek-Harness-*-mac.zip + .dmg on
+ * macOS, DeepSeek-Harness-*-win-x64.zip on Windows), where:
  *   - upstream12 = first 12 hex of the bundled upstream deepseek-harness commit
  *   - app7       = first 7 hex of the dsh-desktop repo commit that built the shell
  *
@@ -17,8 +17,9 @@
  *
  * Updating is SEAMLESS (Codex-style): the zip is extracted and swapped in
  * place by a detached helper after the app quits, then the app relaunches -
- * no DMG, no re-install. The DMG remains as a manual-install fallback for
- * releases that carry no zip (kind === 'dmg' → download-and-open).
+ * no DMG, no re-install. macOS swaps the .app/Contents (ditto helper);
+ * Windows swaps the extracted app directory (PowerShell helper). The DMG
+ * remains as a manual-install fallback for macOS releases that carry no zip.
  *
  * Backward compatibility: the first release used the full 40-hex upstream
  * commit as the tag (no app part). parseTag tolerates it (app === null) and
@@ -26,11 +27,10 @@
  * predates the app7 format still treats any new-format tag as an update.
  */
 
-const { app, shell } = require('electron')
+const { app, net, shell } = require('electron')
 const { createWriteStream, mkdirSync } = require('node:fs')
 const { join, resolve } = require('node:path')
 const https = require('node:https')
-const { net } = require('electron')
 
 const REPO = 'tuterx/dsh-desktop'
 const CHECK_INTERVAL_MS = 30 * 60 * 1000 // re-check every 30 min
@@ -111,11 +111,13 @@ function fetchLatestRelease() {
           const data = JSON.parse(body)
           const tag = String(data.tag_name || '')
           const id = parseTag(tag)
-          // Prefer the zip (seamless in-place update); the DMG is the
-          // manual-install fallback for older releases.
           const assets = data.assets || []
-          const asset = assets.find((a) => /\.zip$/.test(a.name) && /-mac\.zip$/.test(a.name))
-            || assets.find((a) => a.name.endsWith('.dmg'))
+          // Prefer the seamless-update zip for this platform; the DMG is the
+          // manual-install fallback for older macOS releases.
+          const asset = process.platform === 'win32'
+            ? assets.find((a) => /-win.*\.zip$/.test(a.name))
+            : assets.find((a) => /\.zip$/.test(a.name) && /-mac\.zip$/.test(a.name))
+              || assets.find((a) => a.name.endsWith('.dmg'))
           resolve(id && asset ? {
             upstream: id.upstream,
             app: id.app,
@@ -323,10 +325,50 @@ async function downloadSingle(latest, target, onProgress) {
 /**
  * The detached helper that performs the in-place swap: waits for the old app
  * process to exit, unpacks the zip next to the bundle (same volume), swaps
- * Contents atomically (mv = rename), and relaunches. Launched by the main
- * process right before app.quit(), it survives the parent's exit.
+ * the bundle atomically, and relaunches. Launched by the main process right
+ * before app.quit(), it survives the parent's exit.
+ * macOS: shell + ditto (swaps .app/Contents).
+ * Windows: batch + PowerShell Expand-Archive (swaps the extracted app dir;
+ * node_modules is not shipped, so the first launch after an update reinstalls
+ * deps from the bundled offline store automatically).
  */
 function installScript() {
+  if (process.platform === 'win32') {
+    return `@echo off
+rem dsh-desktop in-place updater (Windows, detached helper)
+set "OLD_PID=%~1"
+set "ZIP=%~2"
+set "TARGET=%~3"
+set "LOG=%~4"
+echo [updater] start old_pid=%OLD_PID% zip=%ZIP% target=%TARGET% >> "%LOG%"
+:wait
+tasklist /fi "PID eq %OLD_PID%" 2>nul | findstr /r "%OLD_PID%" >nul 2>&1
+if errorlevel 1 goto exited
+timeout /t 1 /nobreak >nul 2>&1
+goto wait
+:exited
+timeout /t 1 /nobreak >nul 2>&1
+set "TMP=%TARGET%\\.update.tmp"
+rmdir /s /q "%TMP%" 2>nul
+powershell -NoProfile -Command "Expand-Archive -Path '%ZIP%' -DestinationPath '%TMP%' -Force" >> "%LOG%" 2>&1
+if errorlevel 1 goto failed
+rem swap: drop old content, move new content in (same volume)
+for /d %%D in ("%TARGET%\\*") do rmdir /s /q "%%D" 2>nul
+for %%F in ("%TARGET%\\*") do del /q "%%F" 2>nul
+for /d %%D in ("%TMP%\\*") do move "%%D" "%TARGET%\\" >> "%LOG%" 2>&1
+for %%F in ("%TMP%\\*") do move "%%F" "%TARGET%\\" >> "%LOG%" 2>&1
+rmdir /s /q "%TMP%" 2>nul
+echo [updater] swapped >> "%LOG%"
+start "" "%TARGET%\\DeepSeek Harness.exe"
+echo [updater] relaunched >> "%LOG%"
+exit /b 0
+:failed
+echo [updater] extract failed >> "%LOG%"
+rmdir /s /q "%TMP%" 2>nul
+start "" "%TARGET%\\DeepSeek Harness.exe"
+exit /b 1
+`
+  }
   return `#!/bin/sh
 # dsh-desktop in-place updater (detached helper, spawned before quit)
 OLD_PID="$1"; ZIP="$2"; TARGET="$3"; LOG="$4"
@@ -361,9 +403,9 @@ echo "[updater] relaunched" >> "$LOG"
 `
 }
 
-/** Open the downloaded DMG for manual installation (dmg fallback). */
-function openInstaller(dmgPath) {
-  return shell.openPath(dmgPath)
+/** Open a downloaded asset for manual installation (dmg fallback on macOS). */
+function openInstaller(installerPath) {
+  return shell.openPath(installerPath)
 }
 
 module.exports = {

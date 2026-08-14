@@ -18,7 +18,7 @@
  */
 
 const { app, BrowserWindow, Menu, shell, dialog, session, nativeTheme, ipcMain } = require('electron')
-const { spawn } = require('node:child_process')
+const { spawn, execFile } = require('node:child_process')
 const { createServer } = require('node:net')
 const http = require('node:http')
 const { existsSync, mkdirSync, createWriteStream } = require('node:fs')
@@ -32,6 +32,7 @@ const SHUTDOWN_GRACE_MS = 6_000
 const isDev = process.argv.includes('--dev')
 
 let serverProc = null
+let installProc = null
 let mainWindow = null
 let splashWindow = null
 let serverReady = false
@@ -54,6 +55,21 @@ function runtimeRoot() {
     nodeDir: existsSync(candidates[0]) ? candidates[0] : candidates[2],
     dshDir: existsSync(candidates[1]) ? candidates[1] : candidates[3],
   }
+}
+
+/** Absolute path of a bundled extra resource, or null when absent. */
+function bundledPath(name) {
+  const candidates = []
+  if (process.resourcesPath) candidates.push(join(process.resourcesPath, name))
+  candidates.push(join(__dirname, '..', 'resources', name))
+  return candidates.find((p) => existsSync(p))
+}
+
+/** node executable path inside the bundled Node runtime (platform-aware). */
+function nodeBinPath(nodeDir) {
+  return process.platform === 'win32'
+    ? join(nodeDir, 'node.exe')
+    : join(nodeDir, 'bin', 'node')
 }
 
 // ── logging ──────────────────────────────────────────────────────────────
@@ -98,10 +114,65 @@ function pickPort() {
   })
 }
 
+// ── first-launch dependency install (Windows) ─────────────────────────────
+// The packaged Windows app ships WITHOUT dsh/node_modules: pnpm junctions on
+// Windows are absolute-path links with dependency cycles, so no copy or
+// archive of the installed tree is portable. On first launch we run
+// `pnpm install` against the bundled offline store, rebuilding a correct,
+// self-contained tree at the user's install path (~10s locally).
+// Strategy: OFFLINE FIRST (bundled store covers the full dependency set),
+// with an ONLINE fallback that fetches any packages the store lacks — this
+// keeps first launch working even if the bundled store is incomplete.
+function runPnpmInstall(nodeBin, pnpmCli, dshDir, storeDir, offline) {
+  return new Promise((resolve, reject) => {
+    const args = [pnpmCli, 'install',
+      ...(offline ? ['--offline'] : []),
+      '--store-dir', storeDir,
+      '--config.node-linker=hoisted',
+      '--config.confirmModulesPurge=false',
+      '--reporter=append-only']
+    writeLog(`${offline ? '离线' : '在线'}安装 dsh 运行时依赖… (cwd: ${dshDir})`)
+    const proc = spawn(nodeBin, args, {
+      cwd: dshDir,
+      env: { ...process.env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    })
+    installProc = proc
+    const onOut = (buf) => {
+      for (const line of buf.toString().split(/\r?\n/)) {
+        if (line) writeLog('[install] ' + line)
+      }
+    }
+    proc.stdout.on('data', onOut)
+    proc.stderr.on('data', onOut)
+    proc.on('error', (err) => reject(new Error('无法启动 pnpm: ' + err.message)))
+    proc.on('exit', (code) => {
+      if (installProc === proc) installProc = null
+      if (code === 0) resolve()
+      else reject(new Error(`pnpm install 失败 (code=${code})`))
+    })
+  })
+}
+
+function installServerDeps(nodeBin, dshDir) {
+  const pnpmCli = join(bundledPath('pnpm-cli'), 'node_modules', 'pnpm', 'bin', 'pnpm.cjs')
+  const storeDir = bundledPath('pnpm-store')
+  if (!existsSync(pnpmCli) || !storeDir) {
+    return Promise.reject(new Error('缺少离线安装资产 pnpm-cli/pnpm-store — 安装包不完整，请重新解压。'))
+  }
+  return runPnpmInstall(nodeBin, pnpmCli, dshDir, storeDir, true).catch((offlineErr) => {
+    writeLog('离线安装失败，尝试在线安装: ' + offlineErr.message)
+    return runPnpmInstall(nodeBin, pnpmCli, dshDir, storeDir, false).catch((onlineErr) => {
+      throw new Error(`依赖安装失败（离线与在线均失败）。\n离线: ${offlineErr.message}\n在线: ${onlineErr.message}\n日志: ${logFile()}`)
+    })
+  })
+}
+
 // ── server lifecycle ─────────────────────────────────────────────────────
 function launchServer(port) {
   const { nodeDir, dshDir } = runtimeRoot()
-  const nodeBin = join(nodeDir, 'bin', 'node')
+  const nodeBin = nodeBinPath(nodeDir)
   const dshBin = join(dshDir, 'apps', 'cli', 'lib', 'bin.js')
 
   if (!existsSync(nodeBin)) {
@@ -173,10 +244,16 @@ function stopServer() {
     const finish = () => { if (!done) { done = true; r() } }
     proc.once('exit', finish)
     const killGroup = (sig) => {
+      if (process.platform === 'win32') {
+        // Windows has no process-group signals; taskkill /T kills the whole tree.
+        try { execFile('taskkill', ['/pid', String(proc.pid), '/T', '/F'], () => {}) } catch { /* gone */ }
+        return
+      }
       try { process.kill(-proc.pid, sig) } catch {
         try { proc.kill(sig) } catch { /* gone */ }
       }
     }
+    if (process.platform === 'win32') { killGroup('SIGKILL'); return }
     killGroup('SIGTERM')
     setTimeout(() => { killGroup('SIGKILL'); finish() }, SHUTDOWN_GRACE_MS)
   })
@@ -238,8 +315,12 @@ function applyAppearance(win = mainWindow) {
     insertedCssKeys.push(key)
   }).catch(() => { /* page not ready */ })
 
-  // Double-click-to-zoom drag bar + traffic-light safe zone (main world).
-  win.webContents.executeJavaScript(CHROME_FIXES_JS, true).catch(() => {})
+  // macOS: double-click-to-zoom drag bar + traffic-light safe zone (main
+  // world). Windows keeps the native title bar, so there is no overlay to
+  // guard and nothing to inject.
+  if (process.platform === 'darwin') {
+    win.webContents.executeJavaScript(CHROME_FIXES_JS, true).catch(() => {})
+  }
 }
 
 function setAppearance(patch) {
@@ -276,11 +357,13 @@ function createWindow(url) {
     minWidth: 900,
     minHeight: 600,
     title: 'DeepSeek Harness',
-    // hiddenInset: no title bar row - the traffic lights float over the
+    // macOS: hiddenInset — no title bar row, the traffic lights float over the
     // content (VS Code style), so the dark dsh UI owns the whole window.
-    // Traffic lights sit on the dsh sidebar's top-left, away from content.
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 14, y: 14 },
+    // Windows: keep the native title bar (hiddenInset is macOS-only).
+    ...(process.platform === 'darwin' ? {
+      titleBarStyle: 'hiddenInset',
+      trafficLightPosition: { x: 14, y: 14 },
+    } : {}),
     backgroundColor: '#0b0e14',
     show: false,
     webPreferences: {
@@ -642,6 +725,12 @@ async function bootstrap() {
   try {
     const port = await pickPort()
     writeLog('端口: ' + port)
+    const { nodeDir, dshDir } = runtimeRoot()
+    // First launch on Windows: dsh/node_modules is not shipped (see
+    // installServerDeps) — install it from the bundled offline store.
+    if (process.platform === 'win32' && !existsSync(join(dshDir, 'node_modules'))) {
+      await installServerDeps(nodeBinPath(nodeDir), dshDir)
+    }
     launchServer(port)
     if (!serverProc) return // fatal already reported
     const url = await waitForServer(port)
@@ -671,18 +760,32 @@ if (!gotLock) {
 
   app.on('before-quit', async (e) => {
     if (quitting) return
-    if (serverProc) {
+    if (serverProc || installProc) {
       e.preventDefault()
       quitting = true
       writeLog('正在停止 dsh 服务…')
+      if (installProc) {
+        try { execFile('taskkill', ['/pid', String(installProc.pid), '/T', '/F'], () => {}) } catch { /* gone */ }
+      }
       await stopServer()
       app.quit()
     }
   })
 
   process.on('exit', () => {
+    if (installProc) {
+      if (process.platform === 'win32') {
+        try { execFile('taskkill', ['/pid', String(installProc.pid), '/T', '/F'], () => {}) } catch { /* gone */ }
+      } else {
+        try { installProc.kill('SIGKILL') } catch { /* gone */ }
+      }
+    }
     if (serverProc) {
-      try { process.kill(-serverProc.pid, 'SIGKILL') } catch { /* gone */ }
+      if (process.platform === 'win32') {
+        try { execFile('taskkill', ['/pid', String(serverProc.pid), '/T', '/F'], () => {}) } catch { /* gone */ }
+      } else {
+        try { process.kill(-serverProc.pid, 'SIGKILL') } catch { /* gone */ }
+      }
     }
   })
 }
