@@ -15,6 +15,14 @@ on:
   push:
     branches: [main]
 
+# Never build twice in parallel: a scheduled run racing a push run for the
+# same upstream commit produces the same tag, and the loser fails at publish
+# (or wastes a 6-minute build). The queued run then sees the tag at its
+# check step and skips. cancel-in-progress: false keeps the older run.
+concurrency:
+  group: auto-build-dmg
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
@@ -89,6 +97,12 @@ jobs:
           TAG="${{ steps.check.outputs.tag }}"
           SHORT="${COMMIT:0:12}"
           DMG=$(ls -t release/*.dmg | head -1)
+          # A concurrent run may have published this exact build while we
+          # were building; the content is identical, so skipping is right.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists (published by a concurrent run) - skipping"
+            exit 0
+          fi
           gh release create "$TAG" "$DMG" \
             --title "DeepSeek Harness desktop @ upstream ${SHORT}" \
             --notes "Auto-built from deepseek-harness @ ${COMMIT}" \
