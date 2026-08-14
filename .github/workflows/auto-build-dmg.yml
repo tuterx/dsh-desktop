@@ -1,0 +1,83 @@
+name: auto-build-dmg
+
+# Builds a fresh DMG whenever upstream deepseek-harness changes, and publishes
+# it to the GitHub Release of this repo.
+#
+# Triggers:
+#   - schedule:  every 6 hours, checks upstream HEAD; skips when unchanged
+#   - workflow_dispatch: manual "Run workflow" button on GitHub
+#   - push:      rebuild when this repo's build tooling changes
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node 24 + pnpm
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: corepack enable && pnpm --version
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pnpm
+            ~/Library/Caches/electron
+            ~/.cache/electron-builder
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('resources/dsh/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+
+      - name: Prepare resources (pull upstream, build dsh, fetch Node)
+        run: bash scripts/prepare.sh --force
+        env:
+          NODE_MIRROR: https://npmmirror.com/mirrors/node
+          ELECTRON_MIRROR: https://cdn.npmmirror.com/binaries/electron/
+
+      - name: Read upstream commit
+        id: upstream
+        run: echo "commit=$(cat resources/UPSTREAM_COMMIT)" >> "$GITHUB_OUTPUT"
+
+      - name: Check existing release for this upstream commit
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "dsh-${{ steps.upstream.outputs.commit }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build DMG
+        if: steps.check.outputs.exists != 'true'
+        run: npm install && npx electron-builder --mac dmg --arm64
+        env:
+          ELECTRON_MIRROR: https://cdn.npmmirror.com/binaries/electron/
+
+      - name: Publish release
+        if: steps.check.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          COMMIT="${{ steps.upstream.outputs.commit }}"
+          SHORT="${COMMIT:0:12}"
+          DMG=$(ls -t release/*.dmg | head -1)
+          gh release create "dsh-${COMMIT}" "$DMG" \
+            --title "DeepSeek Harness desktop @ upstream ${SHORT}" \
+            --notes "Auto-built from deepseek-harness @ ${COMMIT}" \
+            --latest
