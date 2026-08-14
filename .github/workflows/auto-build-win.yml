@@ -80,7 +80,7 @@ jobs:
       - name: Build Windows zip
         if: steps.check.outputs.exists != 'true'
         shell: bash
-        run: bash scripts/build-win.sh
+        run: npm install && bash scripts/build-win.sh
         env:
           ELECTRON_MIRROR: https://cdn.npmmirror.com/binaries/electron/
           ELECTRON_BUILDER_BINARIES_MIRROR: https://npmmirror.com/mirrors/electron-builder-binaries/

@@ -18,7 +18,9 @@ export ELECTRON_MIRROR="${ELECTRON_MIRROR:-https://cdn.npmmirror.com/binaries/el
 export ELECTRON_BUILDER_BINARIES_MIRROR="${ELECTRON_BUILDER_BINARIES_MIRROR:-https://npmmirror.com/mirrors/electron-builder-binaries/}"
 
 echo "-- electron-builder (win, dir) ------------------------------"
-npx electron-builder --win dir
+# --publish never: CI detection would trigger auto-publish; the release step
+# in the workflow owns publishing (same as build-dmg.sh).
+npx electron-builder --win dir --publish never
 
 echo "-- archiving zip (node_modules excluded; installed on first launch) --"
 ZIP="release/DeepSeek-Harness-$(node -p "require('./package.json').version")-win-x64.zip"
