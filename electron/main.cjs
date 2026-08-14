@@ -220,8 +220,12 @@ function applyAppearance(win = mainWindow) {
   if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return
   const cfg = appearance.load()
 
-  // System chrome (scrollbars, menus, dialogs) follows the theme.
-  nativeTheme.themeSource = cfg.theme === 'system' ? 'system' : cfg.theme
+  // System chrome (scrollbars, menus, dialogs) follows the theme. Setting
+  // themeSource fires nativeTheme 'updated'; assigning the SAME value also
+  // fires it, which looped with the 'updated' listener below and pegged the
+  // renderer at 100% CPU - only assign on change.
+  const themeTarget = cfg.theme === 'system' ? 'system' : cfg.theme
+  if (nativeTheme.themeSource !== themeTarget) nativeTheme.themeSource = themeTarget
   // dsh UI theme: body[data-ds-dark-theme] drives all dark CSS variables.
   appearance.applyThemeToPage(win, appearance.isDark(cfg))
 
@@ -507,8 +511,9 @@ async function performUpdate() {
 async function bootstrap() {
   buildMenu()
 
-  // System chrome follows the configured appearance (dark default).
-  nativeTheme.themeSource = appearance.load().theme === 'system' ? 'system' : appearance.load().theme
+  // System chrome follows the configured appearance (system default).
+  const bootTheme = appearance.load().theme === 'system' ? 'system' : appearance.load().theme
+  if (nativeTheme.themeSource !== bootTheme) nativeTheme.themeSource = bootTheme
 
   // Auto-update: check shortly after launch, then periodically.
   ipcMain.on('update:download', () => { performUpdate() })
