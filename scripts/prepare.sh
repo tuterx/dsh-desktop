@@ -19,7 +19,7 @@ NODE_VERSION="v24.16.0"
 NODE_PLATFORM="darwin-arm64"
 NODE_MIRROR="${NODE_MIRROR:-https://npmmirror.com/mirrors/node}"
 UPSTREAM_REPO="https://github.com/deepseek-ai/deepseek-harness"
-UPSTREAM_BRANCH="main"
+UPSTREAM_BRANCH="master"
 
 FORCE=0
 [[ "${1:-}" == "--force" ]] && FORCE=1
@@ -31,7 +31,9 @@ if [ -d "$RES/dsh/.git" ]; then
   echo "[upstream] pulling latest $UPSTREAM_BRANCH..."
   git -C "$RES/dsh" fetch origin "$UPSTREAM_BRANCH" --depth 1 >/dev/null 2>&1
   git -C "$RES/dsh" reset --hard "origin/$UPSTREAM_BRANCH" >/dev/null
-  git -C "$RES/dsh" clean -fdx --exclude=node_modules >/dev/null || true
+  # -fd (not -fdx): drop untracked non-ignored files, but KEEP ignored build
+  # artifacts (lib/, dist/, node_modules) so the unchanged-commit skip works.
+  git -C "$RES/dsh" clean -fd --exclude=node_modules >/dev/null || true
 else
   echo "[upstream] cloning $UPSTREAM_REPO..."
   mkdir -p "$RES"
@@ -41,8 +43,10 @@ fi
 UPSTREAM_COMMIT="$(git -C "$RES/dsh" rev-parse HEAD)"
 echo "[upstream] pinned commit: ${UPSTREAM_COMMIT:0:12}"
 
-# Skip rebuild when unchanged (unless forced)
-HEAD_FILE="$RES/dsh/UPSTREAM_COMMIT"
+# Skip rebuild when unchanged (unless forced). The marker lives OUTSIDE the
+# upstream checkout (resources/UPSTREAM_COMMIT) because `git clean` inside the
+# clone would otherwise delete it and force a rebuild every time.
+HEAD_FILE="$RES/UPSTREAM_COMMIT"
 if [ "$FORCE" -eq 0 ] && [ -f "$HEAD_FILE" ] && [ "$(cat "$HEAD_FILE")" = "$UPSTREAM_COMMIT" ] \
    && [ -f "$RES/dsh/apps/cli/lib/bin.js" ] && [ -f "$RES/dsh/apps/web/dist/index.html" ]; then
   echo "[upstream] unchanged since last build -- skipping build"
