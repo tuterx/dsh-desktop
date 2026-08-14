@@ -34,6 +34,10 @@
       {
         "from": "resources/node",
         "to": "node"
+      },
+      {
+        "from": "resources/UPSTREAM_COMMIT",
+        "to": "UPSTREAM_COMMIT"
       }
     ],
     "mac": {

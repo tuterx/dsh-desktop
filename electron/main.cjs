@@ -17,13 +17,14 @@
  *      period — no orphan processes survive
  */
 
-const { app, BrowserWindow, Menu, shell, dialog, session, nativeTheme } = require('electron')
+const { app, BrowserWindow, Menu, shell, dialog, session, nativeTheme, ipcMain } = require('electron')
 const { spawn } = require('node:child_process')
 const { createServer } = require('node:net')
 const http = require('node:http')
 const { existsSync, mkdirSync, createWriteStream } = require('node:fs')
 const { join } = require('node:path')
 const appearance = require('./appearance.js')
+const updater = require('./updater.js')
 
 const HOST = '127.0.0.1'
 const READY_TIMEOUT_MS = 120_000
@@ -408,12 +409,76 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
+// ── auto-update ───────────────────────────────────────────────────────────
+let updateTimer = null
+let latestRelease = null
+let downloadedDmg = null
+
+/** Notify the page's update badge about an update state. */
+function sendUpdate(channel, payload) {
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+    mainWindow.webContents.send(channel, payload)
+  }
+}
+
+/** Check GitHub for a newer build; show the badge when one exists. */
+async function checkForUpdate(silent = false) {
+  try {
+    const latest = await updater.fetchLatestRelease()
+    if (!latest) return
+    latestRelease = latest
+    if (updater.hasUpdate(latest)) {
+      writeLog(`发现新版本: ${latest.tag} (当前 ${updater.bundledCommit().slice(0, 12)})`)
+      sendUpdate('update:available', { ...latest, shortCommit: latest.commit.slice(0, 12) })
+    } else if (!silent) {
+      writeLog('已是最新版本')
+    }
+  } catch (err) {
+    writeLog(`更新检查失败: ${err.message}`)
+  }
+}
+
+/** Download the new DMG with progress → notify → open installer when done. */
+async function performUpdate() {
+  if (!latestRelease || downloadedDmg) return
+  try {
+    writeLog(`开始下载: ${latestRelease.assetName}`)
+    downloadedDmg = await updater.downloadDmg(latestRelease, (percent) => {
+      sendUpdate('update:progress', percent)
+    })
+    writeLog(`下载完成: ${downloadedDmg}`)
+    sendUpdate('update:done', { path: downloadedDmg, shortCommit: latestRelease.commit.slice(0, 12) })
+    const choice = await dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      title: '更新已下载',
+      message: `新版本 (${latestRelease.commit.slice(0, 12)}) 已下载到:`,
+      detail: downloadedDmg,
+      buttons: ['立即安装', '稍后'],
+      defaultId: 0,
+      cancelId: 1,
+    })
+    if (choice.response === 0) updater.openInstaller(downloadedDmg)
+  } catch (err) {
+    writeLog(`下载失败: ${err.message}`)
+    sendUpdate('update:error', err.message)
+    downloadedDmg = null
+  }
+}
+
 // ── bootstrap ─────────────────────────────────────────────────────────────
 async function bootstrap() {
   buildMenu()
 
   // System chrome follows the configured appearance (dark default).
   nativeTheme.themeSource = appearance.load().theme === 'system' ? 'system' : appearance.load().theme
+
+  // Auto-update: check shortly after launch, then periodically.
+  ipcMain.on('update:download', () => { performUpdate() })
+  ipcMain.on('update:open-installer', () => {
+    if (downloadedDmg) updater.openInstaller(downloadedDmg)
+  })
+  setTimeout(() => { checkForUpdate() }, updater.CHECK_DELAY_MS)
+  updateTimer = setInterval(() => { checkForUpdate(true) }, updater.CHECK_INTERVAL_MS)
 
   // Allow clipboard access: modern Electron denies unhandled permission
   // requests by default, which breaks navigator.clipboard.readText() used by
