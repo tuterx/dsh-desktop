@@ -1,0 +1,23 @@
+# The dsh-host-electron bundle patch: a native desktop surface over the
+# dsh-base layer. Installed into a profile with:
+#   dsh plugin --profile desktop add @deepseek-ai/dsh-host-electron
+#
+# The row is dormant by default (disabled unless DSH_DESKTOP is set) so it
+# composes harmlessly under `dsh web` in a browser. Setting DSH_DESKTOP=1
+# activates the row: it injects webServer (so the port is bound before it
+# reads it), spawns Electron as a child process, and tears the whole process
+# group down on dispose via ctx.effect.
+#
+# The Electron window loads the UI through a custom dsh-app:// protocol that
+# proxies to the local HTTP server (preserving the server-side __DSH_BOOT__
+# injection), while a preload script overrides fetch/WebSocket to carry RPC
+# over an IPC bridge - no existing dsh client code changes.
+
+- insert:
+    - id: electron-window
+      name: '@deepseek-ai/dsh-host-electron'
+      inject: [webServer]
+      config:
+        dev: !!js process.env.DSH_DESKTOP_DEV === '1'
+        electronPath: !!js process.env.DSH_ELECTRON_PATH
+      disabled: !!js process.env.DSH_DESKTOP !== '1'

@@ -3,3 +3,8 @@ resources/
 release/
 *.log
 .DS_Store
+
+# plugin build artifacts
+plugins/*/lib/
+plugins/*/node_modules/
+plugins/*/*.tsbuildinfo

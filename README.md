@@ -76,3 +76,18 @@ dsh-desktop/
   Developer 证书）。
 - 仅构建 **arm64**（Apple Silicon）；x64 用户需调整 `build.mac.target.arch`。
 - 上游为开发者预览版，构建可能偶发失败——CI 会跳过该次发布，下个周期重试。
+
+## Beta 备选方案：dsh-host-electron 插件（路径③）
+
+仓库还包含一个 **beta 插件** `plugins/dsh-host-electron/`——以 dsh 原生插件方式
+运行桌面端（`DSH_DESKTOP=1 dsh web`，dsh 进程自己拉起 Electron，RPC 走 IPC
+桥接）。与打包版（路径②）互补：
+
+| | 打包版 (本工程) | 插件版 (beta) |
+|---|---|---|
+| 形态 | 独立 .app，用户零依赖 | `dsh plugin` 安装的 Cordis 插件 |
+| 上游兼容 | 只依赖 `dsh web` CLI | 依赖 `ctx.webServer` 等内部 API |
+| 构建 | `npm run dist` | `pnpm --filter ... build` 后发布 npm |
+| 适合 | 分发、稳定使用 | 插件生态、源码集成 |
+
+详见 [plugins/dsh-host-electron/README.md](plugins/dsh-host-electron/README.md)。
