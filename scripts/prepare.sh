@@ -87,7 +87,9 @@ else
   # from the bundled offline store — see section 3.5).
   PNPM_LINKER_FLAG=()
   [ "$IS_WIN" -eq 1 ] && PNPM_LINKER_FLAG=(--config.node-linker=hoisted)
-  pnpm install --reporter=append-only "${PNPM_LINKER_FLAG[@]}"
+  # ${arr[@]+"${arr[@]}"}: expanding an EMPTY array under `set -u` aborts on
+  # bash 3.2 (the GitHub macOS runner's default); the + guard is safe there.
+  pnpm install --reporter=append-only ${PNPM_LINKER_FLAG[@]+"${PNPM_LINKER_FLAG[@]}"}
   npm run build
   echo "$UPSTREAM_COMMIT" > "$HEAD_FILE"
   cd "$ROOT"
