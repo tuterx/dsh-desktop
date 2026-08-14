@@ -183,6 +183,39 @@ function stopServer() {
 }
 
 // ── appearance ────────────────────────────────────────────────────────────
+// Window-chrome fixes injected into the MAIN world (isolated-world DOM
+// creation is invisible to the page): a top drag bar so double-clicking the
+// empty top strip zooms the window (hiddenInset has no title bar), and the
+// traffic-light safe zone on the sidebar, both kept alive across React
+// re-renders by a main-world poll.
+const CHROME_FIXES_JS = `(() => {
+  const styleId = 'dsh-chrome-fixes'
+  if (!document.getElementById(styleId)) {
+    const style = document.createElement('style')
+    style.id = styleId
+    style.textContent = '.dsh-drag-bar{position:fixed;top:0;left:300px;right:52px;height:34px;-webkit-app-region:drag;z-index:2147483645;}'
+    document.head.appendChild(style)
+  }
+  const ensureBar = () => {
+    if (document.querySelector('.dsh-drag-bar')) return
+    const bar = document.createElement('div')
+    bar.className = 'dsh-drag-bar'
+    document.body.appendChild(bar)
+  }
+  const safeZone = () => {
+    const sidebar = [...document.querySelectorAll('div,aside,nav,section')].find((el) => {
+      const r = el.getBoundingClientRect()
+      return r.x === 0 && r.y === 0 && r.width >= 180 && r.width <= 420 && r.height > 500
+    })
+    if (sidebar && sidebar.style.paddingTop !== '40px') sidebar.style.paddingTop = '40px'
+  }
+  ensureBar()
+  safeZone()
+  if (!window.__dshChromePoll) {
+    window.__dshChromePoll = setInterval(() => { ensureBar(); safeZone() }, 2000)
+  }
+})()`
+
 function applyAppearance(win = mainWindow) {
   if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return
   const cfg = appearance.load()
@@ -201,8 +234,8 @@ function applyAppearance(win = mainWindow) {
     insertedCssKeys.push(key)
   }).catch(() => { /* page not ready */ })
 
-  // Keep the traffic lights clear of the sidebar's top-left logo row.
-  win.webContents.executeJavaScript(appearance.SIDEBAR_SAFE_ZONE_JS, true).catch(() => {})
+  // Double-click-to-zoom drag bar + traffic-light safe zone (main world).
+  win.webContents.executeJavaScript(CHROME_FIXES_JS, true).catch(() => {})
 }
 
 function setAppearance(patch) {
