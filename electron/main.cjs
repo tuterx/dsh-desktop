@@ -459,6 +459,7 @@ let downloadedDmg = null // dmg fallback path only
 let downloading = false
 let installStarted = false
 let pendingUpdate = null // { tag, zipPath, target } - ready for in-place install
+let ignoredTag = null // a release the user explicitly ignored (silenced)
 
 /** Notify the page's update badge about an update state. */
 function sendUpdate(channel, payload) {
@@ -467,12 +468,34 @@ function sendUpdate(channel, payload) {
   }
 }
 
+/** Remember the ignored tag so this release never nags again. */
+function ignoreUpdate(tag) {
+  ignoredTag = tag
+  try {
+    const dir = updater.updatesDir()
+    const { mkdirSync, writeFileSync } = require('node:fs')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'ignored.json'), JSON.stringify({ ignoredTag: tag }))
+    writeLog(`已忽略更新: ${tag}`)
+  } catch (err) {
+    writeLog(`忽略记录失败: ${err.message}`)
+  }
+}
+
+function loadIgnoredTag() {
+  try {
+    const { readFileSync } = require('node:fs')
+    return JSON.parse(readFileSync(join(updater.updatesDir(), 'ignored.json'), 'utf8')).ignoredTag || null
+  } catch {
+    return null
+  }
+}
+
 /**
- * Check GitHub for a newer build. When silent, only the log records the
- * outcome; otherwise the page badge shows the result (blue = update ready,
- * green = already latest, tooltip = error). A newer build starts downloading
- * in the background right away (Codex-style: download while you work, apply
- * at quit or on click).
+ * Check GitHub for a newer build. When one exists, the page shows the
+ * standard update notification ([更新] [忽略]) - downloading starts only on
+ * the user's action. An ignored version stays silent; a later version
+ * prompts again. Non-silent results show on the badge.
  */
 async function checkForUpdate(silent = false) {
   try {
@@ -484,10 +507,12 @@ async function checkForUpdate(silent = false) {
     }
     latestRelease = latest
     if (updater.hasUpdate(latest)) {
+      if (latest.tag === ignoredTag) {
+        writeLog(`新版本 ${latest.tag} 已被忽略`)
+        return
+      }
       writeLog(`发现新版本: ${latest.tag} (当前 ${updater.bundledCommit().slice(0, 12)}/${updater.bundledAppBuild()})`)
       sendUpdate('update:available', { ...latest, shortCommit: latest.upstream })
-      // Seamless auto-download (packaged only; dev has no install target).
-      if (app.isPackaged) setTimeout(() => { performUpdate() }, 1500)
     } else {
       writeLog('已是最新版本')
       if (!silent) sendUpdate('update:uptodate', { shortCommit: latest.upstream })
@@ -582,32 +607,26 @@ async function bootstrap() {
   const bootTheme = appearance.load().theme === 'system' ? 'system' : appearance.load().theme
   if (nativeTheme.themeSource !== bootTheme) nativeTheme.themeSource = bootTheme
 
-  // Auto-update: check shortly after launch (silent - no badge when already
-  // latest), then periodically; the 检查更新… menu item checks on demand.
-  // A detected update auto-downloads in the background; applying happens on
-  // quit (seamless) or via the badge's restart button.
-  ipcMain.on('update:download', () => { performUpdate() })
+  // Auto-update: check shortly after launch (silent), then periodically; the
+  // 检查更新… menu item checks on demand. Downloading starts from the
+  // notification's 更新 button; applying happens on quit or via 立即重启.
+  ipcMain.on('update:download', () => {
+    if (!latestRelease) { checkForUpdate(false); return }
+    performUpdate()
+  })
+  ipcMain.on('update:ignore', () => {
+    if (latestRelease) ignoreUpdate(latestRelease.tag)
+  })
   ipcMain.on('update:open-installer', () => {
     if (downloadedDmg) updater.openInstaller(downloadedDmg)
   })
   ipcMain.on('update:check', () => { checkForUpdate(false) }) // badge retry
-  ipcMain.on('update:install', async () => {
-    if (!pendingUpdate) return
-    const choice = await dialog.showMessageBox(mainWindow, {
-      type: 'info',
-      title: '更新就绪',
-      message: `新版本 (${pendingUpdate.tag}) 已下载完成`,
-      detail: '重启应用以完成更新，重启后即为最新版本。',
-      buttons: ['立即重启更新', '稍后'],
-      defaultId: 0,
-      cancelId: 1,
-    })
-    if (choice.response === 0) installNow()
-  })
+  ipcMain.on('update:install', () => { installNow() }) // notification's restart
   // Seamless: quitting with a staged update applies it automatically.
   app.on('before-quit', () => {
     if (pendingUpdate && !installStarted) installNow()
   })
+  ignoredTag = loadIgnoredTag()
   setTimeout(() => { checkForUpdate(true) }, updater.CHECK_DELAY_MS)
   updateTimer = setInterval(() => { checkForUpdate(true) }, updater.CHECK_INTERVAL_MS)
 
