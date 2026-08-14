@@ -148,41 +148,176 @@ function hasUpdate(latest, current = bundledCommit(), currentApp = bundledAppBui
   return Boolean(latest.app && latest.app !== currentApp)
 }
 
+// ── resumable chunked downloader ──────────────────────────────────────────
+const CHUNK_COUNT = 4 // parallel Range connections
+const MAX_ATTEMPTS = 3 // per chunk, with backoff
+const RETRY_BASE_MS = 2000
+const STALL_MS = 30_000 // no data for this long → abort chunk, retry
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+/** Does the asset endpoint honor Range (206)? GitHub CDN does. */
+async function supportsRange(url) {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const res = await net.fetch(url, { headers: { Range: 'bytes=0-0' } })
+      const ok = res.status === 206
+      await res.body?.cancel().catch(() => {})
+      return ok
+    } catch {
+      if (attempt === 2) return false
+      await sleep(1000)
+    }
+  }
+  return false
+}
+
+/**
+ * Download one Range chunk with retry+backoff and resume. The `.part` file
+ * keeps whatever bytes actually reached disk (flushed), so a killed
+ * connection or app restart continues from the real offset - never from
+ * zero, never with a hole.
+ */
+async function downloadChunk(part, url, onBytes) {
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    let file = null
+    let reader = null
+    let lastProgress = Date.now()
+    // A connection that stops delivering data hangs forever; abort it so
+    // the retry can resume from where the bytes actually landed.
+    const stall = setInterval(() => {
+      if (Date.now() - lastProgress > STALL_MS) {
+        reader?.cancel().catch(() => {})
+      }
+    }, 5000)
+    try {
+      const need = part.end - part.start + 1 - part.size
+      if (need <= 0) return
+      const res = await net.fetch(url, { headers: { Range: `bytes=${part.start + part.size}-${part.end}` } })
+      if (res.status !== 206) throw new Error(`端点不支持断点续传 (HTTP ${res.status})`)
+      reader = res.body.getReader()
+      file = createWriteStream(part.path, { flags: part.size > 0 ? 'a' : 'w' })
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (!file.write(Buffer.from(value))) await new Promise((r) => file.once('drain', r))
+        part.size += value.byteLength
+        lastProgress = Date.now()
+        onBytes(value.byteLength)
+      }
+      await new Promise((r) => file.end(r))
+      clearInterval(stall)
+      return
+    } catch (err) {
+      clearInterval(stall)
+      // Flush whatever reached disk, then trust the FILE size as the resume
+      // offset (bytes still buffered in the stream were never written).
+      try { if (file) await new Promise((r) => file.end(r)) } catch { /* noop */ }
+      try { part.size = require('node:fs').statSync(part.path).size } catch { part.size = 0 }
+      if (attempt === MAX_ATTEMPTS) throw new Error(`分块 ${part.i + 1} 下载失败: ${err.message}`)
+      await sleep(RETRY_BASE_MS * attempt)
+    }
+  }
+}
+
 /**
  * Download the release asset (zip preferred, dmg fallback) to
  * <userData>/updates/<tag>/, reporting progress via onProgress.
+ *
+ * Strategy: 4 parallel Range chunks with per-chunk retry/backoff and true
+ * resume (partial `.part` files survive failures AND app restarts - the
+ * next attempt picks up each chunk at its real on-disk offset). Endpoints
+ * without Range support fall back to a plain single-stream download.
  * @returns the downloaded file path.
  */
 async function downloadUpdate(latest, onProgress) {
-  const target = assetPath(latest.tag, latest.assetName)
-  mkdirSync(join(updatesDir(), latest.tag), { recursive: true })
+  const finalPath = assetPath(latest.tag, latest.assetName)
+  const dir = join(updatesDir(), latest.tag)
+  mkdirSync(dir, { recursive: true })
+  const { statSync, createWriteStream, createReadStream, unlinkSync } = require('node:fs')
 
-  // Already downloaded in a previous session? Skip the transfer.
-  const { statSync } = require('node:fs')
+  // Already fully downloaded in a previous session?
   try {
-    if (statSync(target).size === latest.size) return target
+    if (statSync(finalPath).size === latest.size) return finalPath
   } catch { /* not present - download */ }
 
-  const response = await net.fetch(latest.assetUrl, { redirect: 'follow' })
-  if (!response.ok) throw new Error(`下载失败: HTTP ${response.status}`)
-
-  const total = Number(response.headers.get('content-length')) || latest.size || 0
-  let received = 0
-  const reader = response.body.getReader()
-  const file = createWriteStream(target)
-
-  // Stream chunks to disk with progress callbacks.
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    received += value.byteLength
-    if (!file.write(Buffer.from(value))) {
-      await new Promise((r) => file.once('drain', r))
-    }
-    if (total > 0) onProgress?.(Math.round((received / total) * 100), received, total)
+  if (!(await supportsRange(latest.assetUrl))) {
+    return downloadSingle(latest, finalPath, onProgress)
   }
-  await new Promise((r) => file.end(r))
-  return target
+
+  const total = latest.size
+  const chunkSize = Math.ceil(total / CHUNK_COUNT)
+  const parts = []
+  for (let i = 0; i < CHUNK_COUNT; i++) {
+    const start = i * chunkSize
+    const end = Math.min(total - 1, start + chunkSize - 1)
+    if (start > end) continue // tiny file: fewer real chunks
+    const path = `${finalPath}.part${i}`
+    let size = 0
+    try { size = statSync(path).size } catch { /* fresh chunk */ }
+    parts.push({ i, start, end, path, size })
+  }
+
+  let doneBytes = parts.reduce((s, p) => s + p.size, 0)
+  let lastReport = 0
+  const report = () => {
+    if (doneBytes - lastReport < 64 * 1024) return
+    lastReport = doneBytes
+    onProgress?.(total > 0 ? Math.round((doneBytes / total) * 100) : 0)
+  }
+  report()
+
+  await Promise.all(parts.map((p) => downloadChunk(p, latest.assetUrl, (n) => { doneBytes += n; report() })))
+
+  // Every chunk must now be complete, then concatenate in order.
+  for (const p of parts) {
+    const expect = p.end - p.start + 1
+    if (p.size !== expect) throw new Error(`分块 ${p.i + 1} 不完整 (${p.size}/${expect})`)
+  }
+  try { unlinkSync(finalPath) } catch { /* no stale final */ }
+  const out = createWriteStream(finalPath)
+  try {
+    for (const p of parts) {
+      await new Promise((resolve, reject) => {
+        const rs = createReadStream(p.path)
+        rs.on('error', reject)
+        rs.pipe(out, { end: false })
+        rs.on('end', resolve)
+      })
+    }
+  } finally {
+    await new Promise((r) => out.end(r))
+  }
+  if (statSync(finalPath).size !== total) throw new Error('文件校验失败: 大小不符')
+  for (const p of parts) { try { unlinkSync(p.path) } catch { /* noop */ } }
+  onProgress?.(100)
+  return finalPath
+}
+
+/** Single-stream fallback for endpoints without Range support. */
+async function downloadSingle(latest, target, onProgress) {
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const response = await net.fetch(latest.assetUrl, { redirect: 'follow' })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const total = Number(response.headers.get('content-length')) || latest.size || 0
+      let received = 0
+      const reader = response.body.getReader()
+      const file = createWriteStream(target)
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        received += value.byteLength
+        if (!file.write(Buffer.from(value))) await new Promise((r) => file.once('drain', r))
+        if (total > 0) onProgress?.(Math.round((received / total) * 100), received, total)
+      }
+      await new Promise((r) => file.end(r))
+      return target
+    } catch (err) {
+      if (attempt === MAX_ATTEMPTS) throw new Error(`下载失败: ${err.message}`)
+      await sleep(RETRY_BASE_MS * attempt)
+    }
+  }
 }
 
 /**
