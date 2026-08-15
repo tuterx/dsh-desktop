@@ -659,7 +659,8 @@ function installNow() {
   if (!pendingUpdate || !pendingUpdate.target || installStarted) return
   installStarted = true
   const updatesDir = updater.updatesDir()
-  const scriptPath = join(updatesDir, 'install.sh')
+  const isWin = process.platform === 'win32'
+  const scriptPath = join(updatesDir, isWin ? 'install.cmd' : 'install.sh')
   const logPath = join(updatesDir, 'install.log')
   try {
     const { writeFileSync, mkdirSync } = require('node:fs')
@@ -671,13 +672,21 @@ function installNow() {
     return
   }
   writeLog(`开始安装: ${pendingUpdate.tag}`)
-  const child = spawn('/bin/sh', [
-    scriptPath,
-    String(process.pid),
-    pendingUpdate.zipPath,
-    pendingUpdate.target,
-    logPath,
-  ], { detached: true, stdio: 'ignore' })
+  // The swap helper is platform-specific: /bin/sh on macOS (does not exist
+  // on Windows), cmd.exe for the .cmd helper on Windows. Must match
+  // updater.installScript()'s platform branch.
+  const child = isWin
+    ? spawn('cmd.exe', ['/c', scriptPath,
+        String(process.pid), pendingUpdate.zipPath, pendingUpdate.target, logPath],
+      { detached: true, stdio: 'ignore', windowsHide: true })
+    : spawn('/bin/sh', [scriptPath,
+        String(process.pid), pendingUpdate.zipPath, pendingUpdate.target, logPath],
+      { detached: true, stdio: 'ignore' })
+  // Never let a spawn failure crash the main process with Electron's
+  // uncaught-exception dialog — log it and keep the app running.
+  child.on('error', (err) => {
+    writeLog(`安装脚本启动失败: ${err.message}`)
+  })
   child.unref()
   app.quit()
 }
