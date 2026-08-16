@@ -370,9 +370,12 @@ exit /b 1
 `
   }
   return `#!/bin/sh
-# dsh-desktop in-place updater (detached helper, spawned before quit)
-OLD_PID="$1"; ZIP="$2"; TARGET="$3"; LOG="$4"
-echo "[updater] start old_pid=$OLD_PID zip=$ZIP target=$TARGET" >> "$LOG"
+# dsh-desktop in-place updater (detached helper, spawned before quit).
+# The zip is ALREADY extracted by the main process before quitting; this
+# helper only performs the swap - two instant renames (no rm window), so a
+# relaunch racing the swap can never boot the old bundle mid-swap.
+OLD_PID="$1"; TMP="$2"; TARGET="$3"; LOG="$4"
+echo "[updater] start old_pid=$OLD_PID tmp=$TMP target=$TARGET" >> "$LOG"
 i=0
 while kill -0 "$OLD_PID" 2>/dev/null; do
   i=$((i+1))
@@ -380,26 +383,27 @@ while kill -0 "$OLD_PID" 2>/dev/null; do
   sleep 1
 done
 sleep 1
-TMP="$TARGET/.update.tmp"
-rm -rf "$TMP"
-if ! ditto -x -k "$ZIP" "$TMP" 2>>"$LOG"; then
-  echo "[updater] extract failed" >> "$LOG"
-  rm -rf "$TMP"; open "$TARGET"; exit 1
-fi
 APP_IN="$(find "$TMP" -maxdepth 2 -type d -name "*.app" | head -1)"
 if [ -z "$APP_IN" ] || [ ! -d "$APP_IN/Contents/MacOS" ]; then
   echo "[updater] bad payload" >> "$LOG"
   rm -rf "$TMP"; open "$TARGET"; exit 1
 fi
-rm -rf "$TARGET/Contents"
+# Rename old out of the way, rename new in - atomic on APFS, no rm window.
+rm -rf "$TARGET/Contents.old" 2>/dev/null || true
+mv "$TARGET/Contents" "$TARGET/Contents.old" 2>/dev/null || true
 if ! mv "$APP_IN/Contents" "$TARGET/Contents" 2>>"$LOG"; then
-  echo "[updater] swap failed" >> "$LOG"
-  rm -rf "$TMP"; open "$TARGET"; exit 1
+  echo "[updater] swap failed - restoring old contents" >> "$LOG"
+  [ -d "$TARGET/Contents.old" ] && mv "$TARGET/Contents.old" "$TARGET/Contents"
+  rm -rf "$TMP"
+  open "$TARGET"
+  exit 1
 fi
 rm -rf "$TMP"
 echo "[updater] swapped" >> "$LOG"
 open "$TARGET"
 echo "[updater] relaunched" >> "$LOG"
+# Old contents cleanup happens after relaunch (the detached helper lingers).
+rm -rf "$TARGET/Contents.old" 2>/dev/null || true
 `
 }
 

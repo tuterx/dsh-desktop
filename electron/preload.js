@@ -347,11 +347,13 @@ function showNotify(state, opts = {}) {
 
   const title = state === 'available' ? '发现新版本'
     : state === 'downloading' ? '正在下载更新'
+    : state === 'installing' ? '正在准备更新'
     : state === 'done' ? '更新就绪'
     : state === 'error' ? '更新失败'
     : '检查更新'
   const body = state === 'available' ? `版本 ${opts.shortCommit} 可用`
     : state === 'downloading' ? (opts.percent ?? 0) + '%'
+    : state === 'installing' ? '解压更新包，应用即将自动重启…'
     : state === 'done' ? '重启应用后生效，自动完成安装。'
     : state === 'error' ? (opts.message || '下载失败，请重试。')
     : ''
@@ -374,7 +376,7 @@ function showNotify(state, opts = {}) {
 </div>
 <div class="dsh-notify-body"></div>
 ${state === 'downloading' ? '<div class="dsh-notify-progress"><div></div></div>' : ''}
-${state === 'downloading' ? '' : `
+${state === 'downloading' || state === 'installing' ? '' : `
 <div class="dsh-notify-actions">
   <button class="dsh-notify-btn ghost" type="button" data-action="${secondaryAction}">${secondaryLabel}</button>
   <button class="dsh-notify-btn primary" type="button" data-action="${primaryAction}">${primaryLabel}</button>
@@ -478,6 +480,10 @@ ipcRenderer.on('update:done', (_e, info) => {
 ipcRenderer.on('update:error', (_e, message) => {
   showBadge('error')
   showNotify('error', { message })
+})
+// Install is being prepared (zip extraction) - the app quits and relaunches.
+ipcRenderer.on('update:installing', () => {
+  showNotify('installing')
 })
 // Manual check result: already latest - green check, auto-hides after 3 s.
 ipcRenderer.on('update:uptodate', () => {

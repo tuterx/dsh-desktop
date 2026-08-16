@@ -662,12 +662,24 @@ function installNow() {
   const isWin = process.platform === 'win32'
   const scriptPath = join(updatesDir, isWin ? 'install.cmd' : 'install.sh')
   const logPath = join(updatesDir, 'install.log')
+  const tmp = join(pendingUpdate.target, '.update.tmp')
   try {
-    const { writeFileSync, mkdirSync } = require('node:fs')
+    const { writeFileSync, mkdirSync, rmSync } = require('node:fs')
+    const { execFileSync } = require('node:child_process')
     mkdirSync(updatesDir, { recursive: true })
     writeFileSync(scriptPath, updater.installScript(), { mode: 0o755 })
+    // Extract BEFORE quitting (macOS): the swap helper then only renames
+    // (milliseconds), so a manual relaunch racing the swap can never boot
+    // the old bundle mid-swap - that race made the update "not apply" and
+    // the reminder loop forever.
+    if (!isWin) {
+      sendUpdate('update:installing')
+      rmSync(tmp, { recursive: true, force: true })
+      execFileSync('ditto', ['-x', '-k', pendingUpdate.zipPath, tmp], { stdio: 'ignore' })
+    }
   } catch (err) {
-    writeLog(`安装脚本写入失败: ${err.message}`)
+    writeLog(`安装准备失败: ${err.message}`)
+    sendUpdate('update:error', '更新包解压失败，请重试')
     installStarted = false
     return
   }
@@ -680,7 +692,7 @@ function installNow() {
         String(process.pid), pendingUpdate.zipPath, pendingUpdate.target, logPath],
       { detached: true, stdio: 'ignore', windowsHide: true })
     : spawn('/bin/sh', [scriptPath,
-        String(process.pid), pendingUpdate.zipPath, pendingUpdate.target, logPath],
+        String(process.pid), tmp, pendingUpdate.target, logPath],
       { detached: true, stdio: 'ignore' })
   // Never let a spawn failure crash the main process with Electron's
   // uncaught-exception dialog — log it and keep the app running.
