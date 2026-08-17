@@ -89,11 +89,14 @@ jobs:
           COMMIT="${{ steps.upstream.outputs.commit }}"
           APP="${{ steps.upstream.outputs.app }}"
           TAG="dsh-${COMMIT:0:12}${APP}"
+          # The tag must ALWAYS be emitted: the queued duplicate run of the
+          # same push finds the release already exists, and without the tag
+          # the publish step would upload to an empty name and fail.
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           fi
 
       # Build unconditionally: with two platform workflows publishing the
