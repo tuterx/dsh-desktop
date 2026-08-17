@@ -92,10 +92,17 @@ function assetPath(tag, assetName) {
   return join(updatesDir(), tag, assetName)
 }
 
-/** Fetch the latest release info from GitHub. Returns null on failure. */
+/**
+ * Fetch the newest release info that carries an asset for THIS platform.
+ * The platform workflows publish the same tag concurrently; a release may
+ * briefly (or permanently) hold only the other platform's files, so the
+ * bare /releases/latest is not enough - scan the recent list and pick the
+ * newest release with a usable asset (zip preferred, dmg fallback).
+ * Returns null on failure.
+ */
 function fetchLatestRelease() {
   return new Promise((resolve) => {
-    const url = `https://api.github.com/repos/${REPO}/releases/latest`
+    const url = `https://api.github.com/repos/${REPO}/releases?per_page=10`
     const req = https.get(url, {
       headers: { 'User-Agent': 'dsh-desktop', Accept: 'application/vnd.github+json' },
       timeout: 15_000,
@@ -108,27 +115,33 @@ function fetchLatestRelease() {
       res.on('data', (c) => { body += c })
       res.on('end', () => {
         try {
-          const data = JSON.parse(body)
-          const tag = String(data.tag_name || '')
-          const id = parseTag(tag)
-          const assets = data.assets || []
-          // Prefer the seamless-update zip for this platform; the DMG is the
-          // manual-install fallback for older macOS releases.
-          const asset = process.platform === 'win32'
-            ? assets.find((a) => /-win.*\.zip$/.test(a.name))
-            : assets.find((a) => /\.zip$/.test(a.name) && /-mac\.zip$/.test(a.name))
-              || assets.find((a) => a.name.endsWith('.dmg'))
-          resolve(id && asset ? {
-            upstream: id.upstream,
-            app: id.app,
-            tag,
-            name: data.name || tag,
-            kind: /\.zip$/.test(asset.name) ? 'zip' : 'dmg',
-            assetUrl: asset.browser_download_url,
-            assetName: asset.name,
-            size: asset.size,
-            publishedAt: data.published_at,
-          } : null)
+          const releases = JSON.parse(body)
+          for (const data of releases) {
+            const tag = String(data.tag_name || '')
+            const id = parseTag(tag)
+            const assets = data.assets || []
+            // Prefer the seamless-update zip for this platform; the DMG is the
+            // manual-install fallback for older macOS releases.
+            const asset = process.platform === 'win32'
+              ? assets.find((a) => /-win.*\.zip$/.test(a.name))
+              : assets.find((a) => /\.zip$/.test(a.name) && /-mac\.zip$/.test(a.name))
+                || assets.find((a) => a.name.endsWith('.dmg'))
+            if (id && asset) {
+              resolve({
+                upstream: id.upstream,
+                app: id.app,
+                tag,
+                name: data.name || tag,
+                kind: /\.zip$/.test(asset.name) ? 'zip' : 'dmg',
+                assetUrl: asset.browser_download_url,
+                assetName: asset.name,
+                size: asset.size,
+                publishedAt: data.published_at,
+              })
+              return
+            }
+          }
+          resolve(null)
         } catch {
           resolve(null)
         }

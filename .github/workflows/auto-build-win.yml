@@ -77,8 +77,10 @@ jobs:
             echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           fi
 
+      # Build unconditionally (see auto-build-dmg.yml): a 'skip if release
+      # exists' gate lets the other platform win the publish race, leaving
+      # releases without this platform's assets.
       - name: Build Windows zip
-        if: steps.check.outputs.exists != 'true'
         shell: bash
         run: npm install && bash scripts/build-win.sh
         env:
@@ -86,7 +88,6 @@ jobs:
           ELECTRON_BUILDER_BINARIES_MIRROR: https://npmmirror.com/mirrors/electron-builder-binaries/
 
       - name: Publish release
-        if: steps.check.outputs.exists != 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}

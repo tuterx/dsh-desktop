@@ -96,8 +96,12 @@ jobs:
             echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           fi
 
+      # Build unconditionally: with two platform workflows publishing the
+      # same tag concurrently, a 'skip if release exists' gate lets the other
+      # platform win the race and this one never uploads its assets (the
+      # 66fe6b9 release ended up with only Windows files). Build + publish
+      # always; the publish step uploads into an existing release when needed.
       - name: Build DMG + ZIP
-        if: steps.check.outputs.exists != 'true'
         # --publish never: electron-builder in CI tries to auto-publish and
         # fails without GH_TOKEN; publishing is done by the release step below.
         # The ZIP is the seamless in-app update payload; the DMG stays as the
@@ -107,7 +111,6 @@ jobs:
           ELECTRON_MIRROR: https://cdn.npmmirror.com/binaries/electron/
 
       - name: Publish release
-        if: steps.check.outputs.exists != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
