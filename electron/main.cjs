@@ -543,6 +543,7 @@ let downloading = false
 let installStarted = false
 let pendingUpdate = null // { tag, zipPath, target } - ready for in-place install
 let ignoredTag = null // a release the user explicitly ignored (silenced)
+let dismissedTag = null // a release the user closed the notification for (persisted)
 
 /** Notify the page's update badge about an update state. */
 function sendUpdate(channel, payload) {
@@ -565,6 +566,35 @@ function ignoreUpdate(tag) {
   }
 }
 
+/**
+ * Remember that the user closed the notification (x / 稍后) for this
+ * version. Unlike 忽略 the badge keeps its state, and the silence survives
+ * app restarts - the periodic checks must not keep re-popup'ing a version
+ * the user has already dismissed. A NEWER version, or an explicit menu
+ * check, notifies again.
+ */
+function dismissUpdate(tag) {
+  dismissedTag = tag
+  try {
+    const dir = updater.updatesDir()
+    const { mkdirSync, writeFileSync } = require('node:fs')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'dismissed.json'), JSON.stringify({ dismissedTag: tag }))
+    writeLog(`已关闭更新提醒: ${tag}`)
+  } catch (err) {
+    writeLog(`关闭提醒记录失败: ${err.message}`)
+  }
+}
+
+function loadDismissedTag() {
+  try {
+    const { readFileSync } = require('node:fs')
+    return JSON.parse(readFileSync(join(updater.updatesDir(), 'dismissed.json'), 'utf8')).dismissedTag || null
+  } catch {
+    return null
+  }
+}
+
 function loadIgnoredTag() {
   try {
     const { readFileSync } = require('node:fs')
@@ -578,7 +608,9 @@ function loadIgnoredTag() {
  * Check GitHub for a newer build. When one exists, the page shows the
  * standard update notification ([更新] [忽略]) - downloading starts only on
  * the user's action. An ignored version stays silent; a later version
- * prompts again. Non-silent results show on the badge.
+ * prompts again. A dismissed version stays silent for periodic/launch
+ * checks (the user closed its notification); an explicit menu check still
+ * reports it. Non-silent results show on the badge.
  */
 async function checkForUpdate(silent = false) {
   try {
@@ -592,6 +624,10 @@ async function checkForUpdate(silent = false) {
     if (updater.hasUpdate(latest)) {
       if (latest.tag === ignoredTag) {
         writeLog(`新版本 ${latest.tag} 已被忽略`)
+        return
+      }
+      if (latest.tag === dismissedTag && silent) {
+        writeLog(`新版本 ${latest.tag} 提醒已关闭，静默`)
         return
       }
       writeLog(`发现新版本: ${latest.tag} (当前 ${updater.bundledCommit().slice(0, 12)}/${updater.bundledAppBuild()})`)
@@ -721,6 +757,9 @@ async function bootstrap() {
   ipcMain.on('update:ignore', () => {
     if (latestRelease) ignoreUpdate(latestRelease.tag)
   })
+  ipcMain.on('update:dismiss', () => {
+    if (latestRelease) dismissUpdate(latestRelease.tag)
+  })
   ipcMain.on('update:open-installer', () => {
     if (downloadedDmg) updater.openInstaller(downloadedDmg)
   })
@@ -731,6 +770,7 @@ async function bootstrap() {
     if (pendingUpdate && !installStarted) installNow()
   })
   ignoredTag = loadIgnoredTag()
+  dismissedTag = loadDismissedTag()
   setTimeout(() => { checkForUpdate(true) }, updater.CHECK_DELAY_MS)
   updateTimer = setInterval(() => { checkForUpdate(true) }, updater.CHECK_INTERVAL_MS)
 

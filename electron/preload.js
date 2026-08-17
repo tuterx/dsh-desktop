@@ -387,6 +387,7 @@ ${state === 'downloading' || state === 'installing' ? '' : `
   }
   el.querySelector('.dsh-notify-close').addEventListener('click', () => {
     notifyDismissed = true
+    ipcRenderer.send('update:dismiss') // persist: never re-pop this version
     showNotify('hidden') // dismiss the card, keep the badge
   })
   for (const btn of el.querySelectorAll('.dsh-notify-btn')) {
@@ -394,6 +395,7 @@ ${state === 'downloading' || state === 'installing' ? '' : `
       const action = btn.dataset.action
       if (action === 'notify:hide') {
         notifyDismissed = true
+        ipcRenderer.send('update:dismiss') // 稍后: same persistent silence
         showNotify('hidden')
       } else if (action === 'update:ignore') {
         ipcRenderer.send('update:ignore')
