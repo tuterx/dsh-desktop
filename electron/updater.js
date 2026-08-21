@@ -116,30 +116,39 @@ function fetchLatestRelease() {
       res.on('end', () => {
         try {
           const releases = JSON.parse(body)
+          // GitHub sorts by created_at, but CI publishes many releases in one
+          // batch (same created_at), so the list order is NOT publish order.
+          // Pick the NEWEST release by published_at among those that carry a
+          // usable asset for this platform; otherwise a just-published newer
+          // build can sit behind an older one and the updater keeps finding
+          // the stale version (and may stay silent if that one was dismissed).
+          const usable = []
           for (const data of releases) {
             const tag = String(data.tag_name || '')
             const id = parseTag(tag)
             const assets = data.assets || []
-            // Prefer the seamless-update zip for this platform; the DMG is the
-            // manual-install fallback for older macOS releases.
             const asset = process.platform === 'win32'
               ? assets.find((a) => /-win.*\.zip$/.test(a.name))
               : assets.find((a) => /\.zip$/.test(a.name) && /-mac\.zip$/.test(a.name))
                 || assets.find((a) => a.name.endsWith('.dmg'))
-            if (id && asset) {
-              resolve({
-                upstream: id.upstream,
-                app: id.app,
-                tag,
-                name: data.name || tag,
-                kind: /\.zip$/.test(asset.name) ? 'zip' : 'dmg',
-                assetUrl: asset.browser_download_url,
-                assetName: asset.name,
-                size: asset.size,
-                publishedAt: data.published_at,
-              })
-              return
-            }
+            if (id && asset) usable.push({ data, id, asset })
+          }
+          usable.sort((a, b) => String(b.data.published_at || '').localeCompare(String(a.data.published_at || '')))
+          const best = usable[0]
+          if (best) {
+            const { data, id, asset } = best
+            resolve({
+              upstream: id.upstream,
+              app: id.app,
+              tag: String(data.tag_name || ''),
+              name: data.name || String(data.tag_name || ''),
+              kind: /\.zip$/.test(asset.name) ? 'zip' : 'dmg',
+              assetUrl: asset.browser_download_url,
+              assetName: asset.name,
+              size: asset.size,
+              publishedAt: data.published_at,
+            })
+            return
           }
           resolve(null)
         } catch {
